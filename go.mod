@@ -1,6 +1,6 @@
 module github.com/actiontech/sqle-pg-plugin
 
-go 1.18
+go 1.19
 
 require (
 	actiontech.cloud/sqle/pg_query_go/v5 v5.0.0-20240802065429-8c1f286d543f
