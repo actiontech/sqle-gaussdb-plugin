@@ -1,0 +1,8 @@
+bin/
+.idea/
+.vscode/
+vendor/
+*.test
+*.out
+tmp/
+.DS_Store
