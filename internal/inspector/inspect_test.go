@@ -2,10 +2,9 @@ package inspector
 
 import (
 	"context"
+	parser "github.com/pganalyze/pg_query_go/v2"
 	"strings"
 	"testing"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
 
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 

@@ -2,11 +2,10 @@ package utils
 
 import (
 	"fmt"
+	"github.com/actiontech/sqle-pg-plugin/internal/executor"
+	parser "github.com/pganalyze/pg_query_go/v2"
 	"strconv"
 	"strings"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
-	"github.com/actiontech/sqle-pg-plugin/internal/executor"
 )
 
 // ExtractSubQueries :解析出所有子查询
@@ -229,7 +228,7 @@ func ParseAExpr(expr *parser.A_Expr) string {
 	right := ParseCondition(expr.Rexpr)
 	switch expr.Kind {
 	case parser.A_Expr_Kind_AEXPR_OP:
-		return fmt.Sprintf("%s %s %s", left, expr.Name[0].GetString_().GetSval(), right)
+		return fmt.Sprintf("%s %s %s", left, expr.Name[0].GetString_().GetStr(), right)
 	default:
 		return ""
 	}
@@ -239,20 +238,20 @@ func ParseAExpr(expr *parser.A_Expr) string {
 func ParseColumnRef(expr *parser.ColumnRef) string {
 	column := ""
 	for _, field := range expr.Fields {
-		column += field.GetString_().GetSval()
+		column += field.GetString_().GetStr()
 	}
 	return column
 }
 
 // ParseAConst :解析出常量值
 func ParseAConst(expr *parser.A_Const) string {
-	switch expr.Val.(type) {
-	case *parser.A_Const_Ival:
-		return fmt.Sprintf("%d", expr.GetIval().GetIval())
-	case *parser.A_Const_Fval:
-		return fmt.Sprintf("%s", expr.GetFval().GetFval())
-	case *parser.A_Const_Sval:
-		return fmt.Sprintf("'%s'", expr.GetSval().GetSval())
+	switch expr.Val.Node.(type) {
+	case *parser.Node_Integer:
+		return fmt.Sprintf("%d", expr.Val.Node.(*parser.Node_Integer).Integer.Ival)
+	case *parser.Node_Float:
+		return fmt.Sprintf("%s", expr.Val.Node.(*parser.Node_Float).Float.Str)
+	case *parser.Node_String_:
+		return fmt.Sprintf("'%s'", expr.Val.Node.(*parser.Node_String_).String_.Str)
 	default:
 		return ""
 	}
@@ -272,18 +271,18 @@ func ParseSqlValueFunction(expr *parser.SQLValueFunction) string {
 func ParserFuncCall(expr *parser.FuncCall) string {
 	funcName := ""
 	if len(expr.Funcname) > 0 {
-		funcName = expr.Funcname[0].GetString_().GetSval()
+		funcName = expr.Funcname[0].GetString_().GetStr()
 	}
 	parameters := make([]string, 0)
 	// 递归处理参数
 	for _, arg := range expr.Args {
 		switch arg := arg.Node.(type) {
 		case *parser.Node_String_:
-			parameters = append(parameters, fmt.Sprintf("'%s'", arg.String_.GetSval()))
+			parameters = append(parameters, fmt.Sprintf("'%s'", arg.String_.Str))
 		case *parser.Node_Integer:
 			parameters = append(parameters, strconv.Itoa(int(arg.Integer.Ival)))
 		case *parser.Node_Float:
-			parameters = append(parameters, arg.Float.GetFval())
+			parameters = append(parameters, arg.Float.Str)
 		case *parser.Node_FuncCall:
 			parameters = append(parameters, ParserFuncCall(arg.FuncCall))
 		case *parser.Node_AConst:

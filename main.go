@@ -8,7 +8,6 @@ import (
 	"github.com/actiontech/sqle-pg-plugin/internal/inspector"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
-	"github.com/actiontech/sqle/sqle/pkg/params"
 )
 
 var version string
@@ -31,24 +30,11 @@ func main() {
 		driverV2.OptionalModuleGetTableMeta,
 		driverV2.OptionalModuleEstimateSQLAffectRows,
 		driverV2.OptionalModuleGenRollbackSQL,
-		driverV2.OptionalModuleKillProcess)
+		driverV2.OptionalModuleKillProcess,
+		driverV2.OptionalModuleI18n)
 	builder.Meta.DatabaseDefaultPort = 5432
-	builder.Meta.Logo = logo
 	builder.Meta.PluginName = "GaussDB"
-	builder.Meta.DatabaseAdditionalParams = params.Params{
-		{
-			Key:   inspector.ParamKeyDefaultSchema,
-			Value: "",
-			Desc:  "default database",
-			Type:  params.ParamTypeString,
-		},
-		{
-			Key:   inspector.ParamKeyDefaultDatabase,
-			Value: "",
-			Desc:  "default schema",
-			Type:  params.ParamTypeString,
-		},
-	}
+	builder.Meta.Logo = logo
 
 	builder.SetSQLParserFn(inspector.SqlParserFunc)
 	for _, rule := range inspector.RuleHandlers {

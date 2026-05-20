@@ -3,12 +3,11 @@ package inspector
 import (
 	"database/sql"
 	"fmt"
+	"github.com/actiontech/sqle-pg-plugin/internal/executor"
+	parser "github.com/pganalyze/pg_query_go/v2"
 	"strconv"
 	"strings"
 	"sync"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
-	"github.com/actiontech/sqle-pg-plugin/internal/executor"
 )
 
 // 约束类型
@@ -24,10 +23,9 @@ const (
 )
 
 type DatabaseInfo struct {
-	DatabaseName           string                 // 数据库名
-	DatabaseDefaultCollate string                 // 数据库默认排序规则
-	CurrentSchema          string                 // 当前schema
-	SchemaInfoMap          map[string]*SchemaInfo // 当前数据库下所有的schema map,key=schema,value=schemaInfo
+	DatabaseName  string                 // 数据库名
+	CurrentSchema string                 // 当前schema
+	SchemaInfoMap map[string]*SchemaInfo // 当前数据库下所有的schema map,key=schema,value=schemaInfo
 }
 
 type SchemaInfo struct {
@@ -38,14 +36,11 @@ type SchemaInfo struct {
 }
 
 type TableInfo struct {
-	TableName              string            // 表名
-	OwnerName              string            // 属主名
-	TableSizeMB            int               // 表大小
-	IsView                 bool              // 是否是视图
-	IsLoadFromDb           bool              // 是否从数据库装载
-	ColumnInfoList         []*ColumnInfo     // table对应的column信息列表
-	ConstraintList         []*ConstraintInfo // table对应的约束列表
-	DistributionColumnName string            // 分片键
+	TableName      string            // 表名
+	OwnerName      string            // 属主名
+	IsLoadFromDb   bool              // 是否从数据库装载
+	ColumnInfoList []*ColumnInfo     // table对应的column信息列表
+	ConstraintList []*ConstraintInfo // table对应的约束列表
 }
 
 type ColumnInfo struct {
@@ -53,7 +48,6 @@ type ColumnInfo struct {
 	OwnerName       string // 属主名
 	TableName       string // 表名
 	ColumnType      string // 列类型
-	ColumnTypType   string // 列类型类型, 如 'b', 'c', 'd', 'e', 'p', 'r', 'm'
 	ColumnLength    int    // 列长度
 	ColumnPrecision int    // 列精度
 	IsNullable      bool   // 是否空值
@@ -77,14 +71,12 @@ type ConstraintInfo struct {
 }
 
 type IndexInfo struct {
-	IndexName    string             // 索引名
-	OwnerName    string             // 属主名
-	TableName    string             // 表名
-	ColumnList   []string           // 列名列表
-	FuncCallList []*parser.FuncCall // 函数索引列表
-	IsUnique     bool               // 是否唯一索引
-	IsPrimaryKey bool               // 是否主键索引
-	IsLoadFromDb bool               // 是否从数据库装载
+	IndexName    string   // 索引名
+	OwnerName    string   // 属主名
+	TableName    string   // 表名
+	ColumnList   []string // 列名列表
+	IsUnique     bool     // 是否唯一索引
+	IsLoadFromDb bool     // 是否从数据库装载
 }
 
 type PgContext struct {
@@ -112,13 +104,7 @@ func NewPgContext(currentDatabase, currentSchema string, executor *executor.Exec
 		usingType = UsingTypeOffline
 	}
 
-	defaultCollate := ""
 	if usingType == UsingTypeOnline {
-		var err error
-		defaultCollate, err = executor.GetDatabaseDefaultCollate(currentDatabase)
-		if err != nil {
-			return nil, fmt.Errorf("get database default collate error:%s", err)
-		}
 		// 设置当前schema对应的信息
 		schemaInfo, err := setSchemaInfoBySchemaName(currentSchema, executor)
 		if err != nil {
@@ -151,10 +137,9 @@ func NewPgContext(currentDatabase, currentSchema string, executor *executor.Exec
 	}
 
 	databaseInfo := &DatabaseInfo{
-		DatabaseName:           currentDatabase,
-		DatabaseDefaultCollate: defaultCollate,
-		CurrentSchema:          currentSchema,
-		SchemaInfoMap:          schemaInfoMap,
+		DatabaseName:  currentDatabase,
+		CurrentSchema: currentSchema,
+		SchemaInfoMap: schemaInfoMap,
 	}
 	pgContext := &PgContext{
 		CurrentDatabase:      currentDatabase,
@@ -226,7 +211,7 @@ func (c *PgContext) IsExistTable(schemaName, tableName string) (bool, error) {
 	// 从数据库中获取当前schema对应的所有表
 	tableNames, err := c.Executor.GetTableNamesBySchemaName(schemaName)
 	if err != nil {
-		return false, fmt.Errorf("get tableNames by schema name error:%s", err)
+		return false, fmt.Errorf("get tableNames by schema name eror:%s", err)
 	}
 	isExist := false
 	for _, item := range tableNames {
@@ -844,10 +829,6 @@ func (c *PgContext) GetTableColumns(schemaName, tableName string) []string {
 	return columns
 }
 
-func (c *PgContext) GetDatabaseDefaultCollate() string {
-	return c.DatabaseInfo.DatabaseDefaultCollate
-}
-
 // setSchemaInfoBySchemaName :设置schemaName对应的SchemaInfo信息
 func setSchemaInfoBySchemaName(schemaName string, executor *executor.Executor) (*SchemaInfo, error) {
 	tableInfoList := make([]*TableInfo, 0)
@@ -856,10 +837,6 @@ func setSchemaInfoBySchemaName(schemaName string, executor *executor.Executor) (
 	tableNames, err := executor.GetTableNamesBySchemaName(schemaName)
 	if err != nil {
 		return nil, fmt.Errorf("get tablenames by schema name eror:%s", err)
-	}
-	viewNames, err := executor.GetViewNamesBySchemaName(schemaName)
-	if err != nil {
-		return nil, fmt.Errorf("get viewnames by schema name error:%s", err)
 	}
 	tableColumnsMap, err := getColumnInfoListFromDbBatch(schemaName, executor)
 	if err != nil {
@@ -877,11 +854,6 @@ func setSchemaInfoBySchemaName(schemaName string, executor *executor.Executor) (
 		indexInfoList = append(indexInfoList, tableIndexList...)
 	}
 
-	tableDistributionMap, err := GetTableDistributionInfo(schemaName, executor)
-	if err != nil {
-		return nil, fmt.Errorf("get table distribution info error:%s", err)
-	}
-
 	for _, tableName := range tableNames {
 		// 列信息
 		columnsList, ok := tableColumnsMap[tableName]
@@ -894,27 +866,7 @@ func setSchemaInfoBySchemaName(schemaName string, executor *executor.Executor) (
 			constraintList = make([]*ConstraintInfo, 0)
 		}
 		tableInfoList = append(tableInfoList, &TableInfo{
-			TableName:              tableName,
-			IsLoadFromDb:           true,
-			ColumnInfoList:         columnsList,
-			ConstraintList:         constraintList,
-			DistributionColumnName: tableDistributionMap[tableName],
-		})
-	}
-	for _, view := range viewNames {
-		// 列信息
-		columnsList, ok := tableColumnsMap[view]
-		if !ok {
-			continue
-		}
-		// 约束信息
-		constraintList, ok := tableConstraintMap[view]
-		if !ok {
-			constraintList = make([]*ConstraintInfo, 0)
-		}
-		tableInfoList = append(tableInfoList, &TableInfo{
-			TableName:      view,
-			IsView:         true,
+			TableName:      tableName,
 			IsLoadFromDb:   true,
 			ColumnInfoList: columnsList,
 			ConstraintList: constraintList,
@@ -967,7 +919,6 @@ func getColumnInfoListFromDb(schemaName, tableName string, executor *executor.Ex
 			OwnerName:       schemaName,
 			ColumnName:      columnInfo.ColumnName,
 			ColumnType:      columnInfo.ColumnType,
-			ColumnTypType:   columnInfo.ColumnTypType,
 			ColumnLength:    columnLength,
 			ColumnPrecision: aToiNumericScale,
 			IsNullable:      columnInfo.IsNullable == "YES",
@@ -1109,13 +1060,9 @@ func getConstraintInfoListFromDbBatch(schemaName string, executor *executor.Exec
 }
 
 // getIndexInfoListFromDb :从数据库中获取当前表的索引信息
-func getIndexInfoListFromDb(schemaName, tableName string, e *executor.Executor) ([]*IndexInfo, error) {
+func getIndexInfoListFromDb(schemaName, tableName string, executor *executor.Executor) ([]*IndexInfo, error) {
 	indexInfoList := make([]*IndexInfo, 0)
-	indexesInfo, err := e.GetTableIndexesInfo(schemaName, tableName)
-	if err != nil {
-		return nil, err
-	}
-	constraintInfo, err := e.GetTableColumnConstraintInfo(schemaName, tableName)
+	indexesInfo, err := executor.GetTableIndexesInfo(schemaName, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1074,6 @@ func getIndexInfoListFromDb(schemaName, tableName string, e *executor.Executor) 
 		isUniqueIndex := false
 		// 索引对应的列列表
 		columnList := make([]string, 0)
-		funcCallList := make([]*parser.FuncCall, 0)
 		ast, err := SqlParserFunc(indexDDL)
 		if err != nil {
 			return nil, fmt.Errorf("parse sql failed: %v", err)
@@ -1140,18 +1086,6 @@ func getIndexInfoListFromDb(schemaName, tableName string, e *executor.Executor) 
 			indexParams := stmt.IndexStmt.IndexParams
 			for _, indexParam := range indexParams {
 				columnList = append(columnList, indexParam.GetIndexElem().GetName())
-				if indexParam.GetIndexElem().GetExpr() != nil {
-					if f, ok := indexParam.GetIndexElem().GetExpr().GetNode().(*parser.Node_FuncCall); ok {
-						funcCallList = append(funcCallList, f.FuncCall)
-					}
-				}
-			}
-		}
-		isPrimaryKey := false
-		for _, info := range constraintInfo {
-			if info.ConstraintType == executor.ColumnConstraintTypePRIMARY_KEY && info.ConstraintName == indexInfo.IndexName {
-				isPrimaryKey = true
-				break
 			}
 		}
 		indexInfoList = append(indexInfoList, &IndexInfo{
@@ -1159,9 +1093,7 @@ func getIndexInfoListFromDb(schemaName, tableName string, e *executor.Executor) 
 			OwnerName:    schemaName,
 			TableName:    tableName,
 			ColumnList:   columnList,
-			FuncCallList: funcCallList,
 			IsUnique:     isUniqueIndex,
-			IsPrimaryKey: isPrimaryKey,
 			IsLoadFromDb: true,
 		})
 	}
@@ -1169,13 +1101,9 @@ func getIndexInfoListFromDb(schemaName, tableName string, e *executor.Executor) 
 }
 
 // getIndexInfoListFromDbBatch :从数据库中批量获取当前表的索引信息
-func getIndexInfoListFromDbBatch(schemaName string, e *executor.Executor) ([]*IndexInfo, error) {
+func getIndexInfoListFromDbBatch(schemaName string, executor *executor.Executor) ([]*IndexInfo, error) {
 	ret := make([]*IndexInfo, 0)
-	indexesInfoMap, err := e.GetTableIndexesInfoBatch(schemaName)
-	if err != nil {
-		return nil, err
-	}
-	constraintInfo, err := e.GetTableColumnConstraintInfoBatch(schemaName)
+	indexesInfoMap, err := executor.GetTableIndexesInfoBatch(schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -1186,19 +1114,11 @@ func getIndexInfoListFromDbBatch(schemaName string, e *executor.Executor) ([]*In
 				continue
 			}
 			isUniqueIndex := false
-
-			// TODO 解析器支持 GLOBAL 全局索引 eg: create global index if not exists index51 on gi_insert using btree (f13);
-			// indexDDL 是从数据库查询的创建语句，比较规范，先临时处理
-			words := strings.Split(indexDDL, " ")
-			if len(words) > 1 && strings.ToLower(words[1]) == "global" {
-				e.Db.Logger().Warn("ignore keyword GLOBAL when parse sql: %s", indexDDL)
-				indexDDL = strings.Join(append(words[:1], words[2:]...), " ")
-			}
 			// 索引对应的列列表
 			columnList := make([]string, 0)
 			ast, err := SqlParserFunc(indexDDL)
 			if err != nil {
-				return nil, fmt.Errorf("parse sql: %s failed: %v", indexDDL, err)
+				return nil, fmt.Errorf("parse sql failed: %v", err)
 			}
 			switch stmt := ast.(*parser.RawStmt).GetStmt().GetNode().(type) {
 			case *parser.Node_IndexStmt:
@@ -1210,20 +1130,12 @@ func getIndexInfoListFromDbBatch(schemaName string, e *executor.Executor) ([]*In
 					columnList = append(columnList, indexParam.GetIndexElem().GetName())
 				}
 			}
-			isPrimaryKey := false
-			for _, info := range constraintInfo[tableName] {
-				if info.ConstraintType == executor.ColumnConstraintTypePRIMARY_KEY && info.ConstraintName == indexInfo.IndexName {
-					isPrimaryKey = true
-					break
-				}
-			}
 			ret = append(ret, &IndexInfo{
 				IndexName:    indexInfo.IndexName,
 				OwnerName:    schemaName,
 				TableName:    tableName,
 				ColumnList:   columnList,
 				IsUnique:     isUniqueIndex,
-				IsPrimaryKey: isPrimaryKey,
 				IsLoadFromDb: true,
 			})
 		}
@@ -1249,18 +1161,6 @@ func getSchemaInfoAndIndexPosition(p *PgContext, schemaName, indexName string) (
 		}
 	}
 	return schemaInfo, indexPosition
-}
-
-func GetTableDistributionInfo(schemaName string, executor *executor.Executor) (ret map[string] /*table name*/ string, err error) {
-	ret = make(map[string]string)
-	infos, err := executor.GetTableDistributionInfo(schemaName)
-	if err != nil {
-		return nil, err
-	}
-	for _, info := range infos {
-		ret[info.TableName] = info.DistributionColumnName
-	}
-	return ret, nil
 }
 
 func (c *PgContext) GetTableColumnsInfo(schema, tableName string) ([]*executor.TableColumnsInfo, error) {

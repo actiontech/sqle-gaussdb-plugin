@@ -6,19 +6,17 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	"github.com/actiontech/sqle/sqle/errors"
 	hclog "github.com/hashicorp/go-hclog"
 	_ "github.com/jackc/pgx/v4/stdlib"
+	parser "github.com/pganalyze/pg_query_go/v2"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
-	"github.com/lib/pq"
 )
 
 const (
@@ -31,7 +29,6 @@ type Db interface {
 	Ping() error
 	Exec(query string) (driver.Result, error)
 	Transact(qs ...string) ([]driver.Result, error)
-	RollbackQuery(query string, args ...interface{}) ([]map[string]sql.NullString, error)
 	Query(query string, args ...interface{}) ([]map[string]sql.NullString, error)
 	Logger() hclog.Logger
 }
@@ -122,21 +119,6 @@ func (c *BaseConn) Transact(qs ...string) ([]driver.Result, error) {
 		}
 	}
 	return results, nil
-}
-
-func (c *BaseConn) RollbackQuery(query string, args ...interface{}) (result []map[string]sql.NullString, err error) {
-	var tx *sql.Tx
-	c.Logger().Info("doing rollback query", "host", c.host, "port", c.port, "user", c.user)
-	tx, err = c.conn.BeginTx(context.Background(), nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		tx.Rollback()
-		c.Logger().Error("rollback query done")
-	}()
-	result, err = c.Query(query, args...)
-	return result, err
 }
 
 func (c *BaseConn) Query(query string, args ...interface{}) ([]map[string]sql.NullString, error) {
@@ -230,58 +212,6 @@ func NewMockExecutor(entry hclog.Logger) (*Executor, sqlmock.Sqlmock, error) {
 	return executor, handler, nil
 }
 
-// NewMockExecutorForUnitTest returns a new mock executor.
-func NewMockExecutorForUnitTest() (*Executor, sqlmock.Sqlmock, error) {
-	mockDB, handler, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
-	if err != nil {
-		return nil, nil, err
-	}
-	mockConn, err := mockDB.Conn(context.TODO())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var executor = &Executor{}
-	executor.Db = &BaseConn{
-		log: hclog.New(&hclog.LoggerOptions{
-			Level:      hclog.Trace,
-			Output:     os.Stderr,
-			JSONFormat: true,
-		}),
-		host: "mockhost",
-		port: "mockport",
-		user: "mockuser",
-		db:   mockDB,
-		conn: mockConn,
-	}
-	for i := 0; i < 3; i++ {
-		columnsIndex := []string{"indexname", "indexdef"}
-		rowsIndex := sqlmock.NewRows(columnsIndex)
-		handler.ExpectQuery("SELECT indexname,indexdef FROM pg_indexes where schemaname = $1 and tablename = $2").WillReturnRows(rowsIndex)
-		handler.ExpectQuery(`SELECT
-		kcu.column_name,
-		kcu.constraint_name,
-		tc.constraint_type
-	FROM 
-		information_schema.table_constraints AS tc 
-	JOIN information_schema.key_column_usage AS kcu
-	ON tc.constraint_name = kcu.constraint_name
-	AND tc.table_schema = kcu.table_schema
-	WHERE tc.table_name = $1 AND tc.table_schema = $2;
-`).WillReturnRows(sqlmock.NewRows([]string{"column_name", "constraint_name", "constraint_type"}))
-
-		handler.ExpectQuery("SELECT t.typname as typname FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid WHERE t.typisdefined = true AND n.nspname in ('pg_catalog', $1)").
-			WillReturnRows(handler.NewRows([]string{"typname"}).AddRow("int4").AddRow("varchar").AddRow("date"))
-		handler.ExpectQuery("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'").
-			WillReturnRows(handler.NewRows([]string{"table_name"}).AddRow("exist_tb_1").AddRow("exist_tb_2").AddRow("exist_tb_3").AddRow("exist_tb_9"))
-		handler.ExpectQuery("select schema_name from information_schema.schemata where catalog_name = $1 and schema_name not like $2 and schema_name != $3;").
-			WillReturnRows(sqlmock.NewRows([]string{"schema_name"}).AddRow("test"))
-
-	}
-	handler.MatchExpectationsInOrder(false)
-	return executor, handler, nil
-}
-
 //func Ping(entry hclog.Logger, instance *mdriver.DSN) error {
 //	conn, err := NewExecutor(entry, instance, "")
 //	if err != nil {
@@ -353,12 +283,12 @@ func (c *Executor) GetExecutionPlan(sql string) ([]string, error) {
 	}
 
 	// structure sql query plan
-	query := "EXPLAIN (FORMAT JSON) " + sql
+	query := "explain (FORMAT JSON) " + sql
 	results, err := c.Db.Query(query)
 	if err != nil {
 		return nil, err
 	}
-	var epo = make([]string, len(results))
+	var epo []string
 	for n, result := range results {
 		if len(result) != 1 {
 			err := fmt.Errorf("execute query plan error, result not match")
@@ -367,60 +297,7 @@ func (c *Executor) GetExecutionPlan(sql string) ([]string, error) {
 		}
 
 		for _, val := range result {
-			epo[n] = val.String
-		}
-	}
-	return epo, nil
-}
-
-func (c *Executor) GetExecutionPlanNoJson(sql string) ([]string, error) {
-	aliveCheck := c.Db.Ping()
-	if aliveCheck != nil {
-		return nil, aliveCheck
-	}
-
-	// structure sql query plan
-	query := "EXPLAIN " + sql
-	results, err := c.Db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	var epo = make([]string, len(results))
-	for n, result := range results {
-		if len(result) != 1 {
-			err := fmt.Errorf("execute query plan no json error, result not match")
-			c.Db.Logger().Error(err.Error())
-			return nil, errors.New(errors.ConnectRemoteDatabaseError, err)
-		}
-
-		for _, val := range result {
-			epo[n] = val.String
-		}
-	}
-	return epo, nil
-}
-
-func (c *Executor) GetExecutionAnalyzePlan(sql string) ([]string, error) {
-	aliveCheck := c.Db.Ping()
-	if aliveCheck != nil {
-		return nil, aliveCheck
-	}
-
-	// structure sql query plan
-	query := "EXPLAIN (ANALYZE, FORMAT JSON) " + sql
-	results, err := c.Db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	var epo = make([]string, len(results))
-	for n, result := range results {
-		if len(result) != 1 {
-			err := fmt.Errorf("execute query plan error, result not match")
-			c.Db.Logger().Error(err.Error())
-			return nil, errors.New(errors.ConnectRemoteDatabaseError, err)
-		}
-
-		for _, val := range result {
+			epo = make([]string, len(results))
 			epo[n] = val.String
 		}
 	}
@@ -447,30 +324,9 @@ func (c *Executor) GetTableNamesBySchemaName(schemaName string) ([]string, error
 	return tableNames, nil
 }
 
-func (c *Executor) GetViewNamesBySchemaName(schemaName string) ([]string, error) {
-	var query string
-	query = "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'VIEW'"
-	result, err := c.Db.Query(query, schemaName)
-	if err != nil {
-		return nil, err
-	}
-	tableNames := make([]string, len(result))
-	for n, v := range result {
-		if len(v) != 1 {
-			continue
-		}
-		for _, tableName := range v {
-			tableNames[n] = tableName.String
-			break
-		}
-	}
-	return tableNames, nil
-}
-
 type TableColumnsInfo struct {
 	ColumnName             string
 	ColumnType             string
-	ColumnTypType          string // 列类型类型，用于指示特定数据类型的类别,如 'b', 'c', 'd', 'e', 'p', 'r', 'm'
 	CharacterSetName       string
 	IsNullable             string
 	ColumnDefault          string
@@ -479,21 +335,11 @@ type TableColumnsInfo struct {
 	CharacterMaximumLength string
 }
 
-const (
-	Column_DataType_USER_DEFINED = "USER-DEFINED"
-)
-const (
-	Column_Typtype_Enum = "e"
-)
-
 func (c *Executor) GetTableColumnsInfo(schema, tableName string) ([]*TableColumnsInfo, error) {
 	query := `
-	SELECT c.column_name, c.data_type, c.character_set_name, c.is_nullable, c.column_default, c.numeric_precision, 
-	c.numeric_scale, c.character_maximum_length, t.typtype
-	FROM information_schema.columns AS c
-	JOIN pg_catalog.pg_type AS t ON t.oid = c.udt_name::regtype
-	WHERE c.table_schema = $1 AND c.table_name = $2 
-`
+        select column_name, data_type, character_set_name, is_nullable, column_default, numeric_precision, 
+               numeric_scale, character_maximum_length from information_schema.columns 
+        where table_schema = $1 and table_name = $2`
 	records, err := c.Db.Query(query, schema, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("get table columns info error, %s", err.Error())
@@ -510,7 +356,6 @@ func (c *Executor) GetTableColumnsInfo(schema, tableName string) ([]*TableColumn
 			NumericPrecision:       record["numeric_precision"].String,
 			NumericScale:           record["numeric_scale"].String,
 			CharacterMaximumLength: record["character_maximum_length"].String,
-			ColumnTypType:          record["typtype"].String,
 		}
 	}
 
@@ -519,12 +364,9 @@ func (c *Executor) GetTableColumnsInfo(schema, tableName string) ([]*TableColumn
 
 func (c *Executor) GetTableColumnsInfoBatch(schema string) (map[string][]*TableColumnsInfo, error) {
 	querySql := `
-	SELECT c.table_name, c.column_name, c.data_type, c.character_set_name, c.is_nullable, c.column_default, c.numeric_precision, 
-	c.numeric_scale, c.character_maximum_length, t.typtype
-	FROM information_schema.columns AS c
-	JOIN pg_catalog.pg_type AS t ON t.oid = c.udt_name::regtype
-	WHERE c.table_schema = $1 
-`
+        select table_name, column_name, data_type, character_set_name, is_nullable, column_default, 
+               numeric_precision, numeric_scale, character_maximum_length from information_schema.columns 
+        where table_schema = $1`
 	records, err := c.Db.Query(querySql, schema)
 	if err != nil {
 		return nil, fmt.Errorf("get schema=%s table columns info error, %s", schema, err.Error())
@@ -542,7 +384,6 @@ func (c *Executor) GetTableColumnsInfoBatch(schema string) (map[string][]*TableC
 			NumericPrecision:       record["numeric_precision"].String,
 			NumericScale:           record["numeric_scale"].String,
 			CharacterMaximumLength: record["character_maximum_length"].String,
-			ColumnTypType:          record["typtype"].String,
 		}
 		// 检查map中是否已存在该table_name的key，若不存在则初始化一个新的map存储该表的列值
 		if _, ok := ret[tableName]; !ok {
@@ -717,82 +558,6 @@ func (c *Executor) GetTableIndexesInfoBatch(schema string) (map[string][]*TableI
 	return ret, nil
 }
 
-type TableDistributionInfo struct {
-	TableName              string
-	DistributionColumnName string
-}
-
-func (c *Executor) GetTableDistributionInfo(schema string) ([]*TableDistributionInfo, error) {
-	// http://10.186.18.21/sqle/sqle-tbase-plugin/-/issues/21: 不同版本的Tbase中pgxc_class中的字段不一样
-	// 版本1：PG 10 Tbase_v5.06.1.1   pgxc_class 中的字段是pcattnum
-	// 版本2：PG 10 Tbase_v5.21.8.0  pgxc_class 中的字段是DISCOLNUMS
-	isTbaseV5_21 := false
-	query := `SELECT EXISTS (
-    SELECT 1
-    FROM pg_attribute
-    WHERE attrelid = 'pgxc_class'::regclass
-    AND attname = 'discolnums'
-);`
-	records, err := c.Db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	if len(records) != 1 {
-		return nil, fmt.Errorf("get table distribution info error, result is %v", records)
-	}
-	if query, ok := records[0]["exists"]; !ok {
-		return nil, fmt.Errorf("get table distribution info error, column \"exists\" not found")
-	} else if query.String == "true" {
-		isTbaseV5_21 = true
-	}
-
-	if isTbaseV5_21 {
-		query = `SELECT
-	c.relname AS table_name,
-	a.attname AS distribution_key
-FROM
-	pgxc_class pc
-JOIN
-	pg_class c ON pc.pcrelid = c.oid
-JOIN
-	pg_attribute a ON c.oid = a.attrelid
-JOIN
-	pg_namespace n ON c.relnamespace = n.oid
-WHERE
-	a.attnum =  ANY(pc.discolnums)
-	AND n.nspname = $1;`
-	} else {
-		query = `SELECT
-	c.relname AS table_name,
-	a.attname AS distribution_key
-FROM
-	pgxc_class pc
-JOIN
-	pg_class c ON pc.pcrelid = c.oid
-JOIN
-	pg_attribute a ON c.oid = a.attrelid
-JOIN
-	pg_namespace n ON c.relnamespace = n.oid
-WHERE
-	a.attnum = pc.pcattnum
-	AND n.nspname = $1;`
-	}
-
-	records, err = c.Db.Query(query, schema)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make([]*TableDistributionInfo, len(records))
-	for i, record := range records {
-		ret[i] = &TableDistributionInfo{
-			TableName:              record["table_name"].String,
-			DistributionColumnName: record["distribution_key"].String,
-		}
-	}
-	return ret, nil
-}
-
 func (c *Executor) ComputeIndexCellDivision(schemaName, tableName, indexColumn string) (int, error) {
 	sql := fmt.Sprintf(`
         select 
@@ -869,7 +634,7 @@ group by relname;`)
 }
 
 func (c *Executor) GetTableFormExecutionPlan(sql string) ([]string, error) {
-	sprintf := fmt.Sprintf("EXPLAIN %s", sql)
+	sprintf := fmt.Sprintf("explain %s", sql)
 	records, err := c.Db.Query(sprintf)
 	if err != nil {
 		return nil, fmt.Errorf("get table columns info error, %s", err.Error())
@@ -1064,37 +829,6 @@ func GetRecordListQuerySQL(schema string, table string, whereClause *parser.Node
 	return query, err
 }
 
-func (e *Executor) GetRecordCountQuerySQL(schema string, table string, whereClause *parser.Node) (count int, err error) {
-	inputSql := fmt.Sprintf("SELECT count(*) AS count FROM %s.%s", schema, table)
-	tree, err := parser.Parse(inputSql)
-	if err != nil {
-		return -1, err
-	}
-
-	stmt := tree.Stmts[0].GetStmt().GetSelectStmt()
-	if whereClause != nil {
-		stmt.WhereClause = whereClause
-	}
-
-	query, err := parser.Deparse(&parser.ParseResult{Stmts: []*parser.RawStmt{tree.Stmts[0]}})
-	if err != nil {
-		return -1, err
-	}
-	rows, err := e.Db.Query(query)
-	if err != nil {
-		return 0, err
-	}
-	if len(rows) != 1 {
-		return 0, fmt.Errorf("got more than one count")
-	}
-	countStr := rows[0]["count"]
-	if count, err = strconv.Atoi(countStr.String); err != nil {
-		return 0, fmt.Errorf("got unexpected count, error: %v", err)
-	}
-
-	return count, nil
-}
-
 // GetTableIndexDef get all index definitions for a table
 func (e *Executor) GetTableIndexDef(ctx context.Context, schemaName, tableName string) ([]string, error) {
 	rowList, err := e.Db.Query(`
@@ -1102,7 +836,7 @@ SELECT PG_GET_INDEXDEF(indexrelid) AS index_def
 FROM pg_index
 WHERE indrelid = $1 ::regclass`, fmt.Sprintf("%s.%s", schemaName, tableName))
 	if err != nil {
-		return nil, fmt.Errorf("get table: %q index def err: %w", fmt.Sprintf("%s.%s", schemaName, tableName), err)
+		return nil, err
 	}
 
 	var indexDefList []string
@@ -1265,242 +999,7 @@ func (e *Executor) GetDataTypeNameMap(_ context.Context, scheme string) (map[str
 			typeNameMap[typeName] = typeName
 		}
 	}
-	pgDataTypes := []string{"bigserial", "decimal", "mood", "serial", "serial2", "serial4", "serial8", "smallserial", "int", "text", "timestamp", "int8", "int4"}
-	for _, dataType := range pgDataTypes {
-		typeNameMap[dataType] = dataType
-	}
 	return typeNameMap, nil
-}
-
-type TableColumnConstraintInfo struct {
-	ColumnName     string
-	ConstraintName string
-	ConstraintType ColumnConstraintType
-}
-
-type ColumnConstraintType string
-
-const (
-	ColumnConstraintTypeCHECK       = "CHECK"
-	ColumnConstraintTypeFOREIGN_KEY = "FOREIGN KEY"
-	ColumnConstraintTypePRIMARY_KEY = "PRIMARY KEY"
-	ColumnConstraintTypeUNIQUE      = "UNIQUE"
-)
-
-// TODO: AI生成，需要测试
-// TODO: 增加缓存
-func (e *Executor) GetTableColumnConstraintInfo(schemaName string, tableName string) ([]*TableColumnConstraintInfo, error) {
-	sql := `SELECT
-	kcu.column_name,
-	kcu.constraint_name,
-	tc.constraint_type
-FROM 
-	information_schema.table_constraints AS tc 
-JOIN information_schema.key_column_usage AS kcu
-ON tc.constraint_name = kcu.constraint_name
-AND tc.table_schema = kcu.table_schema
-WHERE tc.table_name = $1 AND tc.table_schema = $2;
-`
-	records, err := e.Db.Query(sql, tableName, schemaName)
-	if err != nil {
-		return nil, fmt.Errorf("get table column constraint error, %s", err.Error())
-	}
-
-	ret := make([]*TableColumnConstraintInfo, len(records))
-	for i, record := range records {
-		var typ ColumnConstraintType
-		switch record["constraint_type"].String {
-		case "CHECK":
-			typ = ColumnConstraintTypeCHECK
-		case "FOREIGN KEY":
-			typ = ColumnConstraintTypeFOREIGN_KEY
-		case "PRIMARY KEY":
-			typ = ColumnConstraintTypePRIMARY_KEY
-		case "UNIQUE":
-			typ = ColumnConstraintTypeUNIQUE
-		default:
-			return nil, fmt.Errorf("parser table column constraint error, unknown type %s", record["constraint_type"].String)
-		}
-		ret[i] = &TableColumnConstraintInfo{
-			ColumnName:     record["column_name"].String,
-			ConstraintName: record["constraint_name"].String,
-			ConstraintType: typ,
-		}
-	}
-
-	return ret, nil
-}
-
-func (c *Executor) GetTableColumnConstraintInfoBatch(schema string) (map[string][]*TableColumnConstraintInfo, error) {
-	sql := `SELECT
-	kcu.column_name,
-	kcu.constraint_name,
-	tc.constraint_type,
-	tc.table_name
-FROM 
-	information_schema.table_constraints AS tc 
-JOIN information_schema.key_column_usage AS kcu
-ON tc.constraint_name = kcu.constraint_name
-AND tc.table_schema = kcu.table_schema
-WHERE tc.table_schema = $1;
-	`
-	records, err := c.Db.Query(sql, schema)
-	if err != nil {
-		return nil, fmt.Errorf("get table column constraint error, %s", err.Error())
-	}
-
-	ret := make(map[string][]*TableColumnConstraintInfo)
-	for _, record := range records {
-		var typ ColumnConstraintType
-		switch record["constraint_type"].String {
-		case "CHECK":
-			typ = ColumnConstraintTypeCHECK
-		case "FOREIGN KEY":
-			typ = ColumnConstraintTypeFOREIGN_KEY
-		case "PRIMARY KEY":
-			typ = ColumnConstraintTypePRIMARY_KEY
-		case "UNIQUE":
-			typ = ColumnConstraintTypeUNIQUE
-		default:
-			return nil, fmt.Errorf("parser table column constraint error, unknown type %s", record["constraint_type"].String)
-		}
-		tableName := record["table_name"].String
-		info := &TableColumnConstraintInfo{
-			ColumnName:     record["column_name"].String,
-			ConstraintName: record["constraint_name"].String,
-			ConstraintType: typ,
-		}
-
-		ret[tableName] = append(ret[tableName], info)
-	}
-
-	return ret, nil
-}
-
-type TableType string
-
-const (
-	RelationTableType      TableType = "relation"
-	OriginPartTableType    TableType = "origin_part"
-	SelfStudyPartTableType TableType = "self_study_part"
-)
-
-// RelKind is the kind of relation
-// note: https://github.com/Tencent/TBase/blob/v2.5.0/src/include/catalog/pg_class.h
-type RelKind string
-
-const (
-	RelKindRelation         RelKind = "r"
-	RelKindPartitionedTable RelKind = "p"
-)
-
-// RelPartKind is the kind of relation part
-// note: https://github.com/Tencent/TBase/blob/v2.5.0/src/include/catalog/pg_class.h
-type RelPartKind string
-
-const (
-	RelPartKindParent RelPartKind = "p"
-	RelPartKindChild  RelPartKind = "c"
-	RelPartKindNone   RelPartKind = "n"
-)
-
-// GetTableType get table type
-func (e *Executor) GetTableType(schemaName, tableName string) (TableType, error) {
-	sql := `SELECT c.relkind, c.relpartkind
-FROM pg_class c
-         JOIN pg_namespace nsp ON c.relnamespace = nsp.oid
-WHERE nsp.nspname = $1
-  AND c.relname = $2;`
-	rows, err := e.Db.Query(sql, schemaName, tableName)
-	if err != nil {
-		return "", err
-	}
-	if len(rows) != 1 {
-		return "", fmt.Errorf("got more than one count")
-	}
-
-	relKind := rows[0]["relkind"].String
-	relPartKind := rows[0]["relpartkind"].String
-
-	if RelKind(relKind) == RelKindRelation && RelPartKind(relPartKind) == RelPartKindNone {
-		return RelationTableType, nil
-	}
-
-	if RelKind(relKind) == RelKindPartitionedTable && RelPartKind(relPartKind) == RelPartKindNone {
-		return OriginPartTableType, nil
-	}
-
-	if RelKind(relKind) == RelKindRelation && RelPartKind(relPartKind) == RelPartKindParent {
-		return SelfStudyPartTableType, nil
-	}
-
-	return "", fmt.Errorf("unknow table type")
-}
-
-// TODO: AI生成，需要测试
-// TODO: 增加缓存
-func (e *Executor) GetTableSizeMB(schemaName, tableName string) (int, error) {
-	sql := fmt.Sprintf("SELECT pg_relation_size('%s.%s')/1024/1024 AS table_size", schemaName, tableName)
-	rows, err := e.Db.Query(sql)
-	if err != nil {
-		return 0, err
-	}
-	if len(rows) != 1 {
-		return 0, fmt.Errorf("got more than one count")
-	}
-	sizeStr := rows[0]["table_size"]
-	size, err := strconv.Atoi(sizeStr.String)
-	if err != nil {
-		return 0, fmt.Errorf("got unexpected size, error: %v", err)
-	}
-	return size, nil
-}
-
-// TODO: AI生成，需要测试，注意测试空表情况
-// TODO: 增加缓存
-// getColumnSelectivity calculates the selectivity of a specified column.
-func (e *Executor) GetColumnSelectivity(schemaName, tableName string, columnNames []string) (map[string]float64, error) {
-	// get total count
-	query := fmt.Sprintf(`SELECT COUNT(1) total FROM (SELECT * FROM %s.%s LIMIT 50000)`, pq.QuoteIdentifier(schemaName), pq.QuoteIdentifier(tableName))
-	rows, err := e.Db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("error executing total count query: %v", err)
-	}
-	if len(rows) != 1 {
-		return nil, fmt.Errorf("got more than one count")
-	}
-	totalCount, err := strconv.ParseFloat(rows[0]["total"].String, 64)
-	if err != nil {
-		return nil, fmt.Errorf("got unexpected count, error: %v", err)
-	}
-
-	if totalCount == 0 {
-		return nil, fmt.Errorf("total count is zero")
-	}
-
-	// Use a parameterized query to avoid SQL injection
-	query = `
-		SELECT COUNT(*) AS record_count 
-		FROM (SELECT %s FROM %s.%s LIMIT 50000) AS limited 
-		GROUP BY %s ORDER BY record_count DESC LIMIT 1`
-	columnSelectivityMap := make(map[string]float64, len(columnNames))
-	for _, col := range columnNames {
-		rows, err = e.Db.Query(fmt.Sprintf(query, pq.QuoteIdentifier(col), pq.QuoteIdentifier(schemaName), pq.QuoteIdentifier(tableName), pq.QuoteIdentifier(col)))
-		if err != nil {
-			return nil, fmt.Errorf("error executing max count query: %v", err)
-		}
-		if len(rows) != 1 {
-			return nil, fmt.Errorf("got more than one count")
-		}
-		maxCount, err := strconv.ParseFloat(rows[0]["record_count"].String, 64)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing max count: %v", err)
-		}
-
-		columnSelectivityMap[col] = 1 - maxCount/totalCount
-	}
-
-	return columnSelectivityMap, nil
 }
 
 // GetTableAutoIncrementColumnDefaultValue 获取表自增列默认值
@@ -1519,164 +1018,4 @@ func (e *Executor) GetTableAutoIncrementColumnDefaultValue(_ context.Context, sc
 		}
 	}
 	return resultMap, nil
-}
-
-func (e *Executor) GetDatabaseDefaultCollate(currentDatabaseName string) (defaultCollate string, err error) {
-
-	// 查询数据库的默认排序规则
-	query := fmt.Sprintf("SELECT datcollate FROM pg_database WHERE datname = '%s'", currentDatabaseName)
-	rowList, err := e.Db.Query(query)
-	if err != nil {
-		return "", err
-	}
-	for _, row := range rowList {
-		defaultCollate = row["datcollate"].String
-	}
-	return defaultCollate, nil
-}
-
-// 获取分区表的所有子表
-func (e *Executor) GetChildPartitionTableList(schemaName, tableName string) ([]string, error) {
-	sql := `SELECT c.relname FROM pg_class c JOIN pg_inherits i ON c.oid = i.inhparent JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.relname = $1 AND n.nspname = $2`
-
-	rows, err := e.Db.Query(sql, tableName, schemaName)
-	if err != nil {
-		return nil, err
-	}
-	var childTableList []string
-	for _, row := range rows {
-		childTableList = append(childTableList, row["relname"].String)
-	}
-	return childTableList, nil
-}
-
-type SubTable struct {
-	SchemaName string
-	TableName  string
-}
-
-func (c *Executor) GetOriginPartSubTables(schemaName string, tableName string) ([]*SubTable, error) {
-	sql := `
- SELECT nsp.nspname AS schema_name,c.relname AS child_name
-                          FROM pg_class p1
-                          JOIN pg_inherits i1 ON p1.oid = i1.inhparent
-                          JOIN pg_class c ON i1.inhrelid = c.oid
-                          JOIN pg_namespace nsp on p1.relnamespace = nsp.oid
-                          WHERE nsp.nspname = $1 and p1.relname = $2;`
-	rows, err := c.Db.Query(sql, schemaName, tableName)
-	if err != nil {
-		return nil, err
-	}
-
-	var subTables []*SubTable
-	for _, row := range rows {
-		subTables = append(subTables, &SubTable{
-			SchemaName: row["schema_name"].String,
-			TableName:  row["child_name"].String,
-		})
-	}
-
-	return subTables, nil
-}
-
-func (c *Executor) GetSelfStudyPartSubTables(schemaName string, tableName string) ([]*SubTable, error) {
-	sql := `
-	SELECT relname AS child_name
-FROM pg_class
-WHERE relparent = (SELECT c.oid
-                   FROM pg_class c
-                            JOIN pg_namespace nsp ON c.relnamespace = nsp.oid
-                   WHERE nsp.nspname = $1
-                     AND c.relname = $2
-                     AND c.relpartkind = 'p'
-                   LIMIT 1);`
-
-	rows, err := c.Db.Query(sql, schemaName, tableName)
-	if err != nil {
-		return nil, err
-	}
-
-	var subTables []*SubTable
-	for _, row := range rows {
-		subTables = append(subTables, &SubTable{
-			SchemaName: schemaName,
-			TableName:  row["child_name"].String,
-		})
-	}
-
-	return subTables, nil
-}
-
-type TableSize struct {
-	DataNode   string
-	SchemaName string
-	TableName  string
-	Size       int
-}
-
-func (c *Executor) GetTableSizeGBByNode(dataNode string, schemaName string, tableNameList []string) ([]*TableSize, error) {
-	sql := `EXECUTE DIRECT ON (%s) 'SELECT nsp.nspname, c.relname, (PG_RELATION_SIZE(c.oid) / (1024 * 1024 * 1024))::NUMERIC AS pg_relation_size
-FROM pg_class c
-         JOIN pg_namespace nsp ON c.relnamespace = nsp.oid
-WHERE nsp.nspname = ''%s''
-AND   c.relname IN (%s);'`
-
-	var ss []string
-	for _, tableName := range tableNameList {
-		ss = append(ss, fmt.Sprintf("''%s''", tableName))
-	}
-
-	rows, err := c.Db.Query(fmt.Sprintf(sql, dataNode, schemaName, strings.Join(ss, ",")))
-	if err != nil {
-		return nil, err
-	}
-
-	var tableSizeList []*TableSize
-	for _, row := range rows {
-		size, err := strconv.Atoi(row["pg_relation_size"].String)
-		if err != nil {
-			return nil, fmt.Errorf("got unexpected size, error: %v", err)
-		}
-
-		tableSizeList = append(tableSizeList, &TableSize{
-			DataNode:   dataNode,
-			SchemaName: row["nspname"].String,
-			TableName:  row["relname"].String,
-			Size:       size,
-		})
-	}
-
-	return tableSizeList, nil
-}
-
-func (c *Executor) GetTableSizeGBBySingleNode(schemaName string, tableNameList []string) ([]*TableSize, error) {
-	sql := `SELECT nsp.nspname, c.relname, (PG_RELATION_SIZE(c.oid) / (1024 * 1024 * 1024))::NUMERIC AS pg_relation_size
-FROM pg_class c JOIN pg_namespace nsp ON c.relnamespace = nsp.oid WHERE nsp.nspname = '%s' AND c.relname IN (%s)`
-
-	var ss []string
-	for _, tableName := range tableNameList {
-		ss = append(ss, fmt.Sprintf("'%s'", tableName))
-	}
-
-	rows, err := c.Db.Query(fmt.Sprintf(sql, schemaName, strings.Join(ss, ",")))
-	if err != nil {
-		return nil, err
-	}
-
-	var tableSizeList []*TableSize
-	for _, row := range rows {
-		size, err := strconv.Atoi(row["pg_relation_size"].String)
-		if err != nil {
-			return nil, fmt.Errorf("got unexpected size, error: %v", err)
-		}
-
-		tableSizeList = append(tableSizeList, &TableSize{
-			DataNode:   "-",
-			SchemaName: row["nspname"].String,
-			TableName:  row["relname"].String,
-			Size:       size,
-		})
-	}
-
-	return tableSizeList, nil
 }

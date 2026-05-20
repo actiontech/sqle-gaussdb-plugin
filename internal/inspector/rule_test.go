@@ -17,7 +17,7 @@ import (
 )
 
 // Inspect implements driver.Driver interface
-func newTestDriverObs(ruleName string, database, schema string, conn *executor.Executor) *driverImpl {
+func newTestDriver(ruleName string, database, schema string, conn *executor.Executor) *driverImpl {
 	rules := make([]*driverV2.Rule, 0, len(RuleHandlerMap))
 	dsnParams := &driverV2.DSN{}
 	ah := &driverPkg.AuditHandler{
@@ -63,17 +63,7 @@ func newTestResults() *testResults {
 }
 
 func (r *testResults) add(ruleId string, args ...interface{}) *testResults {
-	r.Add(RuleHandlerMap[ruleId].Rule.Level, "", RuleHandlerMap[ruleId].Message, args...)
-	return r
-}
-
-func (r *testResults) addRuleAndMessageArgs(ruleId string, args ...interface{}) *testResults {
-	r.Add(RuleHandlerMap[ruleId].Rule.Level, "", RuleHandlerMap[ruleId].Message, args...)
-	return r
-}
-
-func (r *testResults) addWarningMessage(msg string) *testResults {
-	r.Add(driverV2.RuleLevelWarn, "", msg)
+	r.Add(RuleHandlerMap[ruleId].Rule.Level, "", localizeMessage(RuleHandlerMap[ruleId].Message), args...)
 	return r
 }
 
@@ -84,16 +74,6 @@ type epOutPut struct {
 
 func testSingleSqlAudit(ruleName string, t *testing.T, sql string, expectResult *testResults, pgContext *PgContext, dataTypes, tables []string) {
 	testAuditWithEpMockConn(ruleName, t, []string{sql}, []*testResults{expectResult}, &epOutPut{}, pgContext, dataTypes, tables)
-}
-
-func testMultiSqlAuditAI(ruleName string, t *testing.T, sqls []string, expectResult ...*testResults) {
-	testAuditWithEpMockConn(ruleName, t, sqls, expectResult, &epOutPut{}, MockPGContext2(nil), nil, nil)
-}
-
-// TODO：处理需要mockEP的情况，跑通00085单测
-func testSingleSqlAuditAI(ruleName string, t *testing.T, sql string, expectResult *testResults) {
-	dataTypes := []string{"varchar", "float4", "float8", "numeric", "bpchar", "weekday", "timestamptz", "date", "time", "timetz"}
-	testAuditWithEpMockConn(ruleName, t, []string{sql}, []*testResults{expectResult}, nil, MockPGContext2(nil), dataTypes, []string{"exist_tb_1", "exist_tb_2", "exist_tb_3", "exist_tb_4", "exist_tb_9"})
 }
 
 func testAuditWithEpMockConn(ruleName string, t *testing.T, sqls []string, expectResult []*testResults, mockEp *epOutPut, pgContext *PgContext, dataTypes, tables []string) {
@@ -110,44 +90,34 @@ func testAuditWithEpMockConn(ruleName string, t *testing.T, sqls []string, expec
 		t.Error(err)
 		return
 	}
-	d = newTestDriverObs(ruleName, "test", "test", exe)
+	d = newTestDriver(ruleName, "test", "test", exe)
 	d.pgContext = pgContext
 
-	if pgContext.UsingType == UsingTypeOnline {
-		// mock pg data type
-		dataTypeRows := mock.NewRows([]string{"typname"})
-		for _, dataType := range dataTypes {
-			dataTypeRows.AddRow(dataType)
-		}
-		mock.ExpectQuery(`SELECT t.typname as typname FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid 
-                          WHERE t.typisdefined = true AND n.nspname in ('pg_catalog', $1)`).WillReturnRows(dataTypeRows)
-
-		// mock get tables by schema
-		tablesRows := mock.NewRows([]string{"table_name"})
-		for _, table := range tables {
-			tablesRows.AddRow(table)
-		}
-
-		{
-			columnsIndex := []string{"indexname", "indexdef"}
-			rowsIndex := sqlmock.NewRows(columnsIndex)
-			mock.ExpectQuery("SELECT indexname,indexdef FROM pg_indexes where schemaname = $1 and tablename = $2").WillReturnRows(rowsIndex)
-			mock.ExpectQuery(`SELECT table_name FROM information_schema.tables
-									 WHERE table_schema = $1 AND table_type = 'BASE TABLE'`).WillReturnRows(tablesRows)
-			mock.MatchExpectationsInOrder(false)
-		}
-
-	}
-
 	if mockEp != nil {
-		// mock explain
-		mock.ExpectQuery("explain (FORMAT JSON) " + sqls[0]).
-			WillReturnRows(mock.NewRows([]string{mockEp.ColumnName}).AddRow(mockEp.Row))
+		if pgContext.UsingType == UsingTypeOnline {
+			// mock pg data type
+			dataTypeRows := mock.NewRows([]string{"typname"})
+			for _, dataType := range dataTypes {
+				dataTypeRows.AddRow(dataType)
+			}
+			mock.ExpectQuery(`SELECT t.typname as typname FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid 
+                          WHERE t.typisdefined = true AND n.nspname in ('pg_catalog', $1)`).WillReturnRows(dataTypeRows)
+			// mock explain
+			mock.ExpectQuery("explain (FORMAT JSON) " + sqls[0]).
+				WillReturnRows(mock.NewRows([]string{mockEp.ColumnName}).AddRow(mockEp.Row))
+			// mock get tables by schema
+			tablesRows := mock.NewRows([]string{"table_name"})
+			for _, table := range tables {
+				tablesRows.AddRow(table)
+			}
+			mock.ExpectQuery(`SELECT table_name FROM information_schema.tables
+		                 WHERE table_schema = $1 AND table_type = 'BASE TABLE'`).WillReturnRows(tablesRows)
+		}
 	}
 
 	currentSchema := ""
 	pgContext.Executor = exe
-	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, PgContext: pgContext}
+	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, pgContext: pgContext}
 	ctx := context.WithValue(context.Background(), CtxKeyRuleHandlerCtx, handlerCtx)
 	results, err := d.Audit(ctx, sqls)
 	if err != nil {
@@ -189,7 +159,7 @@ func testAuditWithDbQueryMockConn(ruleName string, t *testing.T, sqls []string, 
 		t.Error(err)
 		return
 	}
-	d = newTestDriverObs(ruleName, "test", "test", exe)
+	d = newTestDriver(ruleName, "test", "test", exe)
 
 	if len(*dbOperates) > 0 {
 		// mock db query
@@ -248,7 +218,7 @@ func testAuditWithDbQueryMockConn(ruleName string, t *testing.T, sqls []string, 
 	d.pgContext = pgContext
 
 	currentSchema := ""
-	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, PgContext: d.pgContext}
+	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, pgContext: d.pgContext}
 	ctx := context.WithValue(context.Background(), CtxKeyRuleHandlerCtx, handlerCtx)
 	results, err := d.Audit(ctx, sqls)
 	if err != nil {
@@ -1978,7 +1948,7 @@ func testAuditWithSearchPathMockConn(ruleName string, t *testing.T, sqls []strin
 		t.Error(err)
 		return
 	}
-	d = newTestDriverObs(ruleName, "test", "test", exe)
+	d = newTestDriver(ruleName, "test", "test", exe)
 
 	if len(mockSearchPaths) > 0 {
 		mock.ExpectQuery(`SHOW search_path`).
@@ -2061,7 +2031,7 @@ func testAuditWithSearchPathMockConn(ruleName string, t *testing.T, sqls []strin
 	d.pgContext = pgContext
 
 	currentSchema := ""
-	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, PgContext: d.pgContext}
+	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, pgContext: d.pgContext}
 	ctx := context.WithValue(context.Background(), CtxKeyRuleHandlerCtx, handlerCtx)
 	results, err := d.Audit(ctx, sqls)
 	if err != nil {
@@ -2092,7 +2062,7 @@ func testAuditWithSpecifiedSchema(ruleName string, t *testing.T, database, schem
 		t.Error(err)
 		return
 	}
-	d = newTestDriverObs(ruleName, database, schema, exe)
+	d = newTestDriver(ruleName, database, schema, exe)
 
 	if len(*dbOperates) > 0 {
 		// mock db query
@@ -2151,7 +2121,7 @@ func testAuditWithSpecifiedSchema(ruleName string, t *testing.T, database, schem
 	d.pgContext = pgContext
 
 	currentSchema := ""
-	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, PgContext: d.pgContext}
+	handlerCtx := ruleHandlerContext{CurrentSchema: &currentSchema, Executor: exe, pgContext: d.pgContext}
 	ctx := context.WithValue(context.Background(), CtxKeyRuleHandlerCtx, handlerCtx)
 	results, err := d.Audit(ctx, sqls)
 	if err != nil {

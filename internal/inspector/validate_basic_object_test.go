@@ -1,15 +1,14 @@
 package inspector
 
 import (
-	"log"
-	"os"
-	"testing"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/actiontech/sqle-pg-plugin/internal/executor"
 	"github.com/hashicorp/go-hclog"
+	parser "github.com/pganalyze/pg_query_go/v2"
 	"github.com/stretchr/testify/assert"
+	"log"
+	"os"
+	"testing"
 )
 
 type testValidateBasicObject struct {

@@ -8,8 +8,12 @@ import (
 	"strings"
 	"sync"
 
-	pg_query "actiontech.cloud/sqle/pg_query_go/v5"
 	"github.com/actiontech/sqle-pg-plugin/internal/executor"
+	"github.com/pganalyze/pg_query_go/v2"
+)
+
+const (
+	defaultSchema = "public"
 )
 
 type UnSupportSqlType struct {
@@ -49,7 +53,7 @@ func (i *driverImpl) getRollbackSQL(ctx context.Context, rawStmt *pg_query.RawSt
 func (i *driverImpl) getRollbackSQLForCreateIndexStmt(_ context.Context, stmt *pg_query.Node_IndexStmt) (string, error) {
 	schema := stmt.IndexStmt.GetRelation().GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	idxName := stmt.IndexStmt.GetIdxname()
 	rollbackSQL := fmt.Sprintf("DROP INDEX IF EXISTS %s.%s;", schema, idxName)
@@ -60,7 +64,7 @@ func (i *driverImpl) getRollbackSQLForRename(_ context.Context, stmt *pg_query.N
 	relation := stmt.RenameStmt.GetRelation()
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 
 	switch stmt.RenameStmt.GetRenameType() {
@@ -82,7 +86,7 @@ func (i *driverImpl) getRollbackSQLForAlterTable(ctx context.Context, stmt *pg_q
 	relation := stmt.AlterTableStmt.GetRelation()
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	table := relation.GetRelname()
 
@@ -123,7 +127,7 @@ func (i *driverImpl) getRollbackSQLForCreateStmt(_ context.Context, stmt *pg_que
 	relation := stmt.CreateStmt.GetRelation()
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	table := relation.GetRelname()
 	rollbackSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s.%s;", schema, table)
@@ -146,9 +150,6 @@ func (i *driverImpl) getRollbackSQLForDropStmt(ctx context.Context, stmt *pg_que
 		if err != nil {
 			return "", err
 		}
-		if schema == "" {
-			schema = i.currentSchema
-		}
 
 		tableDDL, err := i.GetTableDDL(ctx, schema, table)
 		if err != nil {
@@ -160,9 +161,6 @@ func (i *driverImpl) getRollbackSQLForDropStmt(ctx context.Context, stmt *pg_que
 		schema, index, err := getSchemaAndTableNameForDropIndex(itemList)
 		if err != nil {
 			return "", err
-		}
-		if schema == "" {
-			schema = i.currentSchema
 		}
 
 		indexDef, err := i.GetIndexDefByCache(ctx, schema, index)
@@ -179,10 +177,11 @@ func (i *driverImpl) getRollbackSQLForDropStmt(ctx context.Context, stmt *pg_que
 func getSchemaAndTableNameForDropIndex(itemList []*pg_query.Node) (string, string, error) {
 	var schema, index string
 	if len(itemList) == 1 {
-		index = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetSval()
+		schema = defaultSchema
+		index = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetStr()
 	} else if len(itemList) == 2 {
-		schema = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetSval()
-		index = itemList[1].GetNode().(*pg_query.Node_String_).String_.GetSval()
+		schema = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetStr()
+		index = itemList[1].GetNode().(*pg_query.Node_String_).String_.GetStr()
 	} else {
 		return "", "", errors.New("sql error")
 	}
@@ -192,10 +191,11 @@ func getSchemaAndTableNameForDropIndex(itemList []*pg_query.Node) (string, strin
 func getSchemaAndTableNameForDropTable(itemList []*pg_query.Node) (string, string, error) {
 	var schema, table string
 	if len(itemList) == 1 {
-		table = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetSval()
+		schema = defaultSchema
+		table = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetStr()
 	} else if len(itemList) == 2 {
-		schema = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetSval()
-		table = itemList[1].GetNode().(*pg_query.Node_String_).String_.GetSval()
+		schema = itemList[0].GetNode().(*pg_query.Node_String_).String_.GetStr()
+		table = itemList[1].GetNode().(*pg_query.Node_String_).String_.GetStr()
 	} else {
 		return "", "", errors.New("sql error")
 	}
@@ -207,7 +207,7 @@ func (i *driverImpl) getRollbackSQLForInsertStmt(ctx context.Context, stmt *pg_q
 	relation := stmt.InsertStmt.Relation
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	table := relation.GetRelname()
 
@@ -290,22 +290,19 @@ func getInsertValueList(valuesList []*pg_query.Node) ([][]string, error) {
 
 func getStrFromNodeAConst(aConst *pg_query.Node_AConst) string {
 	var val string
-	node := aConst.AConst.GetVal()
+	node := aConst.AConst.GetVal().GetNode()
 	switch stmt := node.(type) {
-	case *pg_query.A_Const_Ival:
-		val = strconv.Itoa(int(stmt.Ival.GetIval()))
-	case *pg_query.A_Const_Fval:
-		val = stmt.Fval.GetFval()
-	case *pg_query.A_Const_Sval:
-		val = stmt.Sval.GetSval()
-	case *pg_query.A_Const_Bsval:
-		val = stmt.Bsval.GetBsval()
-	}
-
-	if aConst.AConst.GetIsnull() {
+	case *pg_query.Node_Integer:
+		val = strconv.Itoa(int(stmt.Integer.GetIval()))
+	case *pg_query.Node_Float:
+		val = stmt.Float.GetStr()
+	case *pg_query.Node_String_:
+		val = stmt.String_.GetStr()
+	case *pg_query.Node_BitString:
+		val = stmt.BitString.GetStr()
+	case *pg_query.Node_Null:
 		val = "NULL"
 	}
-
 	return val
 }
 
@@ -314,7 +311,7 @@ func (i *driverImpl) getRollbackSQLForUpdateStmt(ctx context.Context, stmt *pg_q
 	relation := stmt.UpdateStmt.GetRelation()
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	table := relation.GetRelname()
 
@@ -417,7 +414,7 @@ func (i *driverImpl) getRollbackSQLForDeleteStmt(ctx context.Context, stmt *pg_q
 	relation := stmt.DeleteStmt.GetRelation()
 	schema := relation.GetSchemaname()
 	if schema == "" {
-		schema = i.currentSchema
+		schema = defaultSchema
 	}
 	table := relation.GetRelname()
 

@@ -1,11 +1,10 @@
 package utils
 
 import (
+	parser "github.com/pganalyze/pg_query_go/v2"
+	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
-	"github.com/stretchr/testify/assert"
 )
 
 type extractSubQueries struct {

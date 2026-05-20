@@ -11,24 +11,17 @@ import (
 	"strconv"
 	"strings"
 
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
+	"github.com/actiontech/dms/pkg/dms-common/i18nPkg"
 	"github.com/actiontech/sqle-pg-plugin/internal/executor"
 	"github.com/actiontech/sqle-pg-plugin/internal/utils"
+	"github.com/actiontech/sqle-pg-plugin/plocale"
 	pkgParser "github.com/actiontech/sqle-pg-plugin/pkg/parser"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
+	"github.com/nicksnyder/go-i18n/v2/i18n"
+	parser "github.com/pganalyze/pg_query_go/v2"
 )
 
 const (
-	// rule type
-	RuleTypeDMLConvention     = "DML规范"
-	RuleTypeDDLConvention     = "DDL规范"
-	RuleTypeDQLConvention     = "DQL规范"
-	RuleTypeSuggestion        = "使用建议"
-	RuleTypeNamingConvention  = "命名规范"
-	RuleTypeGlobalConfig      = "全局配置"
-	RuleTypeIndexOptimization = "索引优化"
-	RuleTypeIndexConvention   = "索引规范"
-
 	// rule name
 	RuleId1  = "pg_001"
 	RuleId2  = "pg_002"
@@ -101,15 +94,28 @@ const (
 	RuleId77 = "pg_077"
 	RuleId78 = "pg_078"
 	RuleId79 = "pg_079"
+	RuleId80 = "pg_080"
 )
 
 type RuleHandler struct {
 	Rule                 driverV2.Rule
-	Message              string
-	AstSQLHandler        func(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error)
-	RawSQLHandler        func(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (string, error)
+	Message              *i18n.Message
+	AstSQLHandler        func(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error)
+	RawSQLHandler        func(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (i18nPkg.I18nStr, error)
 	AllowOffline         bool
 	NotAllowOfflineStmts []interface{}
+}
+
+// localizeMessage resolves an i18n.Message into a multi-language I18nStr.
+// If args are provided, each language's text is formatted with fmt.Sprintf.
+func localizeMessage(msg *i18n.Message, args ...interface{}) i18nPkg.I18nStr {
+	if msg == nil {
+		return nil
+	}
+	if len(args) == 0 {
+		return plocale.Bundle.LocalizeAll(msg)
+	}
+	return plocale.Bundle.LocalizeAllWithArgs(msg, args...)
 }
 
 // IsAllowOfflineRule 允许下线规则判定，返回false或true
@@ -126,21 +132,17 @@ func (rh *RuleHandler) IsAllowOfflineRule(node *parser.RawStmt) bool {
 	return true
 }
 
+
+var RuleHandlers []RuleHandler
 var RuleHandlerMap = map[string]RuleHandler{}
 
-func init() {
-	for _, rh := range RuleHandlers {
-		RuleHandlerMap[rh.Rule.Name] = rh
-	}
-}
-
-func rule1(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule1(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -154,97 +156,97 @@ func rule1(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL
 			for _, filed := range column.ColumnRef.GetFields() {
 				_, ok = filed.GetNode().(*parser.Node_AStar)
 				if ok {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule2(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule2(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_UpdateStmt:
 		if stmt.UpdateStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_DeleteStmt:
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule3(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule3(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_SelectStmt:
 		if stmt.SelectStmt.HavingClause != nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule4(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule4(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_DropStmt:
 		if stmt.DropStmt.RemoveType != parser.ObjectType_OBJECT_INDEX {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_DropdbStmt, *parser.Node_DropRoleStmt, *parser.Node_DropTableSpaceStmt,
 		*parser.Node_DropOwnedStmt, *parser.Node_DropSubscriptionStmt, *parser.Node_DropUserMappingStmt:
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	default:
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule5(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule5(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch node.GetStmt().GetNode().(type) {
 	case *parser.Node_ViewStmt:
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule6(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule6(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch node.GetStmt().GetNode().(type) {
 	case *parser.Node_CreateTrigStmt:
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule7(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule7(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -269,16 +271,16 @@ func rule7(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL
 			}
 		}
 		if len(stmt.CreateStmt.TableElts) > 0 && !hasPK {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule8(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule8(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -303,16 +305,16 @@ func rule8(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL
 			}
 		}
 		if len(stmt.CreateStmt.TableElts) > 0 && hasFK {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule9(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule9(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -326,19 +328,19 @@ func rule9(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL
 		}
 		count := rule.Params.GetParam("max_column_count").Int()
 		if count > 0 && columnCounter > count {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, count, columnCounter), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, count, columnCounter), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule10(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (string, error) {
+func rule10(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	maxSqlLen := rule.Params.GetParam("sql_length").Int()
 	sqlLen := len(sql)
 	if maxSqlLen > 0 && sqlLen > maxSqlLen {
-		return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxSqlLen), nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message, maxSqlLen), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 func max(num1, num2 int) int {
@@ -351,10 +353,10 @@ func max(num1, num2 int) int {
 	return result
 }
 
-func rule11(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule11(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	maxCompositeIndexColumnNumber := 0
@@ -402,15 +404,15 @@ func rule11(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	expectCounter := rule.Params.GetParam("expect_max_index_column_number").Int()
 	if maxCompositeIndexColumnNumber > expectCounter {
-		return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectCounter), nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message, expectCounter), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule12(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule12(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	indexNames := []string{}
@@ -421,7 +423,7 @@ func rule12(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if constraint.GetColumnDef() != nil && constraint.GetColumnDef().GetColname() == "key" {
 				// create table add index
 				for _, getStrName := range constraint.GetColumnDef().TypeName.GetNames() {
-					indexNames = append(indexNames, getStrName.GetString_().GetSval())
+					indexNames = append(indexNames, getStrName.GetString_().GetStr())
 				}
 			}
 		}
@@ -435,7 +437,7 @@ func rule12(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				if alterColumnDef != nil && alterColumnDef.Colname == "index" {
 					// alter table add key
 					for _, getStrName := range alterColumnDef.TypeName.GetNames() {
-						indexNames = append(indexNames, getStrName.GetString_().GetSval())
+						indexNames = append(indexNames, getStrName.GetString_().GetStr())
 					}
 				}
 			}
@@ -450,10 +452,10 @@ func rule12(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	prefix := rule.Params.GetParam("expect_index_name_prefix").String()
 	for _, name := range indexNames {
 		if !strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, prefix), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, prefix), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func inKeywords(word string) bool {
@@ -465,10 +467,10 @@ func inKeywords(word string) bool {
 	return false
 }
 
-func rule15(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule15(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var name []string
@@ -481,7 +483,7 @@ func rule15(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				if columnDef.GetColumnDef().GetColname() == "key" {
 					//CREATE TABLE tablename( colname ...,KEY [keyname] ...,CONSTRAINT constraintname ...);
 					for _, keyName := range columnDef.GetColumnDef().GetTypeName().GetNames() {
-						name = append(name, keyName.GetString_().GetSval())
+						name = append(name, keyName.GetString_().GetStr())
 					}
 				} else {
 					//CREATE TABLE tablename( [colname] ...,KEY keyname ...,CONSTRAINT constraintname ...);
@@ -514,7 +516,7 @@ func rule15(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				if columnDef.GetColname() == "index" {
 					//ALTER TABLE tablename ADD INDEX [indexname] ...;
 					for _, indexNameString := range columnDef.GetTypeName().GetNames() {
-						name = append(name, indexNameString.GetString_().GetSval())
+						name = append(name, indexNameString.GetString_().GetStr())
 					}
 				} else {
 					//ALTER TABLE tablename ADD [columnname] ...;
@@ -541,17 +543,17 @@ func rule15(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 		if len(illegalWords) > 0 {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, strings.Join(illegalWords, ", ")), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, strings.Join(illegalWords, ", ")), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func examineSubClauseLeftFuzzyMatch(subStmt *parser.Node) []string {
 	var fuzzyMatchStrings []string
 	//where column like '[%value]'
 	if aExpr := subStmt.GetAExpr(); aExpr != nil && aExpr.GetKind() == parser.A_Expr_Kind_AEXPR_LIKE {
-		constStr := aExpr.GetRexpr().GetAConst().GetSval().GetSval()
+		constStr := aExpr.GetRexpr().GetAConst().GetVal().GetString_().GetStr()
 		if constStr != "" && constStr[0:1] == "%" {
 			fuzzyMatchStrings = append(fuzzyMatchStrings, constStr)
 		}
@@ -592,10 +594,10 @@ func examineSubClauseLeftFuzzyMatch(subStmt *parser.Node) []string {
 	return fuzzyMatchStrings
 }
 
-func rule16(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule16(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt(); stmt.GetNode().(type) {
@@ -603,7 +605,7 @@ func rule16(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		//Select ...
 		allFuzzyMatchStrings := examineSubClauseLeftFuzzyMatch(stmt)
 		if allFuzzyMatchStrings != nil {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
 		}
 	case *parser.Node_UpdateStmt:
 		//Update ...
@@ -612,7 +614,7 @@ func rule16(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			allFuzzyMatchStrings = examineSubClauseLeftFuzzyMatch(whereClause)
 		}
 		if allFuzzyMatchStrings != nil {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
 		}
 	case *parser.Node_DeleteStmt:
 		//Delete ...
@@ -621,10 +623,10 @@ func rule16(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			allFuzzyMatchStrings = examineSubClauseLeftFuzzyMatch(whereClause)
 		}
 		if allFuzzyMatchStrings != nil {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, strings.Join(allFuzzyMatchStrings, ", ")), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func checkEpWithRule17(plan PlanType, rule *driverV2.Rule, expectMaxScanRowNumber int) bool {
@@ -670,24 +672,6 @@ func getExecutorFromCtx(ctx context.Context) (*executor.Executor, error) {
 	return e, nil
 }
 
-func getCurrentSchemaFromCtx(ctx context.Context) (string, error) {
-	c, ok := ctx.Value(CtxKeyRuleHandlerCtx).(ruleHandlerContext)
-	if !ok {
-		return "", fmt.Errorf("cannot get context for rule handler")
-	}
-
-	return c.GetCurrentSchema(), nil
-}
-
-func getDatabaseCollateFromCtx(ctx context.Context) (string, error) {
-	c, ok := ctx.Value(CtxKeyRuleHandlerCtx).(ruleHandlerContext)
-	if !ok {
-		return "", fmt.Errorf("cannot get context for rule handler")
-	}
-
-	return c.GetCurrentDatabaseCollation(), nil
-}
-
 func getPgContextFromCtx(ctx context.Context) (*PgContext, error) {
 	c, ok := ctx.Value(CtxKeyRuleHandlerCtx).(ruleHandlerContext)
 	if !ok {
@@ -700,15 +684,15 @@ func getPgContextFromCtx(ctx context.Context) (*PgContext, error) {
 	return pgContext, nil
 }
 
-func rule17(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (string, error) {
+func rule17(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	// sql from MyBatis XML file is not the executable sql. so can't do explain for it.
 	// TODO(@wy) ignore explain when audit Mybatis file
 	nodes, err := pkgParser.ParseSQL(rawSql)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(nodes) <= 0 {
-		return "", fmt.Errorf("can not find parse tree from SQL")
+		return nil, fmt.Errorf("can not find parse tree from SQL")
 	}
 
 	// filter out IURD
@@ -718,31 +702,31 @@ func rule17(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []s
 	case *parser.Node_InsertStmt:
 	case *parser.Node_UpdateStmt:
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if pgContext.UsingType == UsingTypeOffline {
-		return "", nil
+		return nil, nil
 	}
 	e := pgContext.Executor
 
 	jsonQueryPlans, err := getExplainResult(pgContext, rawSql, e)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	expectMaxScanRowNumber := rule.Params.GetParam("expect_number_of_scan_line").Int()
 	for _, queryPlan := range *jsonQueryPlans {
 		if !recursionCheckEp([]PlanType{queryPlan}, rule, expectMaxScanRowNumber, checkEpWithRule17, true) {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectMaxScanRowNumber), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, expectMaxScanRowNumber), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func getExplainResult(pgContext *PgContext, rawSql string, e *executor.Executor) (*[]PlanType, error) {
@@ -777,10 +761,10 @@ func countSubSelect(fromClauses []*parser.Node) int {
 	return max
 }
 
-func rule19(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule19(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -788,24 +772,24 @@ func rule19(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		maxSubSelectInFrom := countSubSelect(stmt.SelectStmt.GetFromClause())
 		expectedNestingLayers := rule.Params.GetParam("expected_nesting_layers").Int()
 		if maxSubSelectInFrom > expectedNestingLayers {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedNestingLayers, maxSubSelectInFrom), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedNestingLayers, maxSubSelectInFrom), nil
 		}
 
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule21(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule21(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
-	checkLockingClause := func(sLC *parser.Node) string {
+	checkLockingClause := func(sLC *parser.Node) i18nPkg.I18nStr {
 		if sLC != nil && sLC.GetLockingClause().GetStrength() == parser.LockClauseStrength_LCS_FORUPDATE {
-			return RuleHandlerMap[rule.Name].Message
+			return localizeMessage(RuleHandlerMap[rule.Name].Message)
 		}
-		return ""
+		return nil
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -856,20 +840,20 @@ func rule21(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule22(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (string, error) {
+func rule22(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	tableName := ""
 	specifiedSchemaName := ""
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -877,13 +861,13 @@ func rule22(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_VariableSetStmt:
 		// 切换当前schema
 		if stmt.VariableSetStmt.GetName() != "search_path" {
-			return "", nil
+			return nil, nil
 		}
 		currentSchemaName, err = setCurrentSchemaFromVariableSetStmt(ctx, stmt)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return "", nil
+		return nil, nil
 	case *parser.Node_CreateStmt:
 		tableName = stmt.CreateStmt.GetRelation().GetRelname()
 		specifiedSchemaName = stmt.CreateStmt.GetRelation().GetSchemaname()
@@ -894,7 +878,7 @@ func rule22(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	//case *parser.Node_CreateForeignTableStmt:
 	//	tableName = stmt.CreateForeignTableStmt.GetBaseStmt().GetRelation().GetRelname()
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	if specifiedSchemaName == "" {
@@ -904,12 +888,12 @@ func rule22(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	found, err := findCommentForTable(ctx, specifiedSchemaName, currentSchemaName, tableName, nextSQLs)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !found {
-		return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, tableName), nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message, tableName), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 func findCommentForTable(ctx context.Context, targetSchemaName, currentSchemaName, targetTableName string, sqls []string) (found bool, err error) {
@@ -946,18 +930,18 @@ func findCommentForTable(ctx context.Context, targetSchemaName, currentSchemaNam
 		items := stmtComment.CommentStmt.GetObject().GetList().GetItems()
 		if len(items) == 2 { // 显式指定schema
 			itemNamePt, ok := items[0].GetNode().(*parser.Node_String_)
-			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetSchemaName { // 匹配schema名
+			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetSchemaName { // 匹配schema名
 				continue
 			}
 
 			itemNamePt, ok = items[1].GetNode().(*parser.Node_String_)
-			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetTableName { // 匹配表名
+			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetTableName { // 匹配表名
 				continue
 			}
 			return true, nil
 		} else if len(items) == 1 { // 没有显式指定schema，使用当前schema
 			itemNamePt, ok := items[0].GetNode().(*parser.Node_String_)
-			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetTableName { // 匹配表名
+			if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetTableName { // 匹配表名
 				continue
 			}
 
@@ -987,10 +971,10 @@ func findCommentForTable(ctx context.Context, targetSchemaName, currentSchemaNam
 	return false, nil
 }
 
-func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (string, error) {
+func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (i18nPkg.I18nStr, error) {
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	tableName := ""
@@ -998,7 +982,7 @@ func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	columns := []string{}
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -1006,13 +990,13 @@ func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_VariableSetStmt:
 		// 切换当前schema
 		if stmt.VariableSetStmt.GetName() != "search_path" {
-			return "", nil
+			return nil, nil
 		}
 		currentSchemaName, err = setCurrentSchemaFromVariableSetStmt(ctx, stmt)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return "", nil
+		return nil, nil
 	case *parser.Node_CreateStmt:
 		tableName = stmt.CreateStmt.GetRelation().GetRelname()
 		specifiedSchemaName = stmt.CreateStmt.GetRelation().GetSchemaname()
@@ -1032,20 +1016,20 @@ func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				continue
 			}
 			if cmdNode.AlterTableCmd.GetSubtype() != parser.AlterTableType_AT_AddColumn {
-				return "", nil
+				return nil, nil
 			}
 			break
 		}
 		if cmdNode == nil {
 			// 没有找到需要校验规则的语法
-			return "", nil
+			return nil, nil
 		}
 		specifiedSchemaName = stmt.AlterTableStmt.GetRelation().GetSchemaname()
 		tableName = stmt.AlterTableStmt.GetRelation().GetRelname()
 		colDef := cmdNode.AlterTableCmd.GetDef().GetColumnDef()
 		columns = append(columns, colDef.GetColname())
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	if specifiedSchemaName == "" {
@@ -1054,58 +1038,58 @@ func rule23(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	}
 	columnsWithoutComment, err := findCommentForColumns(ctx, specifiedSchemaName, currentSchemaName, tableName, columns, nextSQLs)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(columnsWithoutComment) > 0 {
-		return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, tableName, strings.Join(columnsWithoutComment, ", ")), nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message, tableName, strings.Join(columnsWithoutComment, ", ")), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule26(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule26(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_AlterTableStmt:
 		cmd := stmt.AlterTableStmt.GetCmds()[0]
 		if cmd.GetAlterTableCmd().GetSubtype() == parser.AlterTableType_AT_AlterColumnType {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule27(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (string, error) {
+func rule27(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQLs []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_InsertStmt:
 		if stmt.InsertStmt.GetCols() == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule28(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (string, error) {
+func rule28(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	nodes, err := pkgParser.ParseSQL(rawSql)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(nodes) <= 0 {
-		return "", fmt.Errorf("can not find parse tree from SQL")
+		return nil, fmt.Errorf("can not find parse tree from SQL")
 	}
 
 	// filter out IURD
@@ -1115,29 +1099,29 @@ func rule28(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []s
 	case *parser.Node_InsertStmt:
 	case *parser.Node_UpdateStmt:
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if pgContext.UsingType == UsingTypeOffline {
-		return "", nil
+		return nil, nil
 	}
 	e := pgContext.Executor
 
 	jsonQueryPlans, err := getExplainResult(pgContext, rawSql, e)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// true:存在笛卡尔积；false:不存在笛卡尔积
 	if checkForCartesian(jsonQueryPlans) {
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 // rule28 method : true:存在笛卡尔积；false:不存在笛卡尔积
@@ -1170,18 +1154,18 @@ func checkPlanForCartesian(plan PlanType) bool {
 }
 
 //goland:noinspection LanguageDetectionInspection
-func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
@@ -1211,13 +1195,13 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				columns := make([]string, 0)
 				keys := tableElt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					columns = append(columns, strings.ToLower(key.GetString_().GetSval()))
+					columns = append(columns, strings.ToLower(key.GetString_().GetStr()))
 				}
 				for _, indexColumn := range indexColumns {
 					eachIndexColumn := strings.Split(indexColumn, ",")[:]
 					for i := 0; i < len(columns) && i < len(eachIndexColumn); i++ {
 						if columns[i] == eachIndexColumn[i] {
-							return RuleHandlerMap[rule.Name].Message, nil
+							return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 						}
 					}
 				}
@@ -1236,7 +1220,7 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, typMod := range typMods {
 						fields := typMod.GetColumnRef().GetFields()
 						for _, field := range fields {
-							indexColumns = append(indexColumns, field.GetString_().GetSval())
+							indexColumns = append(indexColumns, field.GetString_().GetStr())
 						}
 					}
 				}
@@ -1248,7 +1232,7 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					alterTableCmd.Def.GetConstraint().GetContype() == parser.ConstrType_CONSTR_UNIQUE {
 					keys := alterTableCmd.Def.GetConstraint().GetKeys()
 					for _, key := range keys {
-						indexColumns = append(indexColumns, key.GetString_().GetSval())
+						indexColumns = append(indexColumns, key.GetString_().GetStr())
 					}
 				}
 			}
@@ -1266,7 +1250,7 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	// create table 不需要查询数据库，跳过
 	if len(tableName) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	// 从数据库中获取索引对应列进行校验
@@ -1279,7 +1263,7 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		// 获取数据库中索引列
 		dbIndexColumns, err = utils.GetTableIndexColumns(pgContext.Executor, schemaName, tableName)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
@@ -1287,20 +1271,20 @@ func rule31(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		eachDbIndexColumn := strings.Split(dbIndexColumn, ",")[:]
 		for i := 0; i < len(indexColumns) && i < len(eachDbIndexColumn); i++ {
 			if indexColumns[i] == eachDbIndexColumn[i] {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule32(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule32(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -1320,11 +1304,11 @@ func rule32(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.UpdateStmt.WhereClause)...)
 		if stmt.UpdateStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if stmt.UpdateStmt.WhereClause != nil && stmt.UpdateStmt.WhereClause.GetSubLink() == nil {
 			if isWhereConditionAlwaysTrue(stmt.UpdateStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.TargetList
@@ -1335,11 +1319,11 @@ func rule32(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if stmt.DeleteStmt.WhereClause != nil && stmt.DeleteStmt.WhereClause.GetSubLink() == nil {
 			if isWhereConditionAlwaysTrue(stmt.DeleteStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
@@ -1347,20 +1331,20 @@ func rule32(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	for _, subQuery := range subQueries {
 		if isWhereConditionAlwaysTrue(subQuery.WhereClause) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if subQuery.GetLarg() != nil {
 			if isWhereConditionAlwaysTrue(subQuery.GetLarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		if subQuery.GetRarg() != nil {
 			if isWhereConditionAlwaysTrue(subQuery.GetRarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则32方法：where条件是否恒为TRUE
@@ -1395,7 +1379,7 @@ func isWhereConditionAlwaysTrue(whereClause *parser.Node) bool {
 			// 获取左右值
 			leftValue := getConstantValue(clause.AExpr.Lexpr)
 			rightValue := getConstantValue(clause.AExpr.Rexpr)
-			switch clause.AExpr.Name[0].GetString_().GetSval() {
+			switch clause.AExpr.Name[0].GetString_().GetStr() {
 			case "=":
 				// 检查左右值是否相等
 				if leftValue == rightValue {
@@ -1413,7 +1397,7 @@ func isWhereConditionAlwaysTrue(whereClause *parser.Node) bool {
 				// 左右都是数值才比较大小
 				if leftErr == nil && rightErr == nil {
 					// 根据运算符进行比较
-					switch clause.AExpr.Name[0].GetString_().GetSval() {
+					switch clause.AExpr.Name[0].GetString_().GetStr() {
 					case ">":
 						if leftNum > rightNum {
 							return true
@@ -1443,13 +1427,13 @@ func getConstantValue(expr *parser.Node) string {
 	// 检查表达式是否为常量节点
 	constant, ok := expr.Node.(*parser.Node_AConst)
 	if ok {
-		switch nodeType := constant.AConst.Val.(type) {
-		case *parser.A_Const_Ival:
-			return strconv.Itoa(int(nodeType.Ival.GetIval()))
-		case *parser.A_Const_Fval:
-			return nodeType.Fval.GetFval()
-		case *parser.A_Const_Sval:
-			return nodeType.Sval.GetSval()
+		switch nodeType := constant.AConst.Val.Node.(type) {
+		case *parser.Node_Integer:
+			return strconv.Itoa(int(nodeType.Integer.GetIval()))
+		case *parser.Node_Float:
+			return nodeType.Float.GetStr()
+		case *parser.Node_String_:
+			return nodeType.String_.GetStr()
 		}
 	}
 	typeCast, ok := expr.Node.(*parser.Node_TypeCast)
@@ -1462,7 +1446,7 @@ func getConstantValue(expr *parser.Node) string {
 			fields := columnRef.ColumnRef.Fields
 			columnNames := make([]string, 0)
 			for _, field := range fields {
-				columnNames = append(columnNames, strings.ToLower(field.GetString_().GetSval()))
+				columnNames = append(columnNames, strings.ToLower(field.GetString_().GetStr()))
 			}
 			return strings.Join(columnNames, ".")
 		}
@@ -1470,13 +1454,13 @@ func getConstantValue(expr *parser.Node) string {
 	return ""
 }
 
-func rule33(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule33(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -1491,11 +1475,11 @@ func rule33(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 			result := recursiveValidateScalarSubQuery(subQuery)
 			if result {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则33方法：递归校验标量子查询，标量子查询是只返回一个值的子查询，如：select id, (select count(*) from test1) as num from test2
@@ -1505,9 +1489,9 @@ func recursiveValidateScalarSubQuery(subQuery *parser.SelectStmt) bool {
 	if len(targetList) == 1 {
 		// 标量子查询：1.使用了集合函数
 		funcCall := subQuery.TargetList[0].GetResTarget().GetVal().GetFuncCall()
-		if funcCall != nil {
+		if funcCall != nil && len(funcCall.GetFuncname()) > 0 {
 			allowFunctionNames := []string{"count", "max", "min", "avg", "sum"}
-			functionName := strings.ToLower(funcCall.GetFuncname()[0].GetString_().GetSval())
+			functionName := strings.ToLower(funcCall.GetFuncname()[0].GetString_().GetStr())
 			for _, allowFunctionName := range allowFunctionNames {
 				if functionName == allowFunctionName {
 					return true
@@ -1525,7 +1509,7 @@ func recursiveValidateScalarSubQuery(subQuery *parser.SelectStmt) bool {
 			fields := columnRef.GetFields()
 			if len(fields) == 1 {
 				if subQuery.GetLimitCount() != nil &&
-					subQuery.GetLimitCount().GetAConst().GetIval().GetIval() == 1 {
+					subQuery.GetLimitCount().GetAConst().GetVal().GetInteger().GetIval() == 1 {
 					return true
 				}
 			}
@@ -1540,13 +1524,13 @@ func recursiveValidateScalarSubQuery(subQuery *parser.SelectStmt) bool {
 	return false
 }
 
-func rule34(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule34(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -1556,12 +1540,12 @@ func rule34(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			subQueries = append(subQueries, *utils.ExtractSubQueries(node.GetStmt())...)
 			for _, subQuery := range subQueries {
 				if _, isExist := findOrCondition(subQuery.WhereClause); isExist {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则34方法：找到or的方法
@@ -1631,20 +1615,20 @@ func getColumnNameFromWhereCondition(expr *parser.Node) string {
 		columnNames := make([]string, 0)
 		fields := columnRef.Fields
 		for _, field := range fields {
-			columnNames = append(columnNames, strings.ToLower(field.GetString_().GetSval()))
+			columnNames = append(columnNames, strings.ToLower(field.GetString_().GetStr()))
 		}
 		return strings.Join(columnNames, ".")
 	}
 	return ""
 }
 
-func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -1653,7 +1637,7 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if relation != nil {
 			owner := relation.GetSchemaname()
 			if len(owner) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_CreateTableAsStmt:
@@ -1661,54 +1645,54 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if into != nil && into.GetRel() != nil {
 			schemaName := into.GetRel().GetSchemaname()
 			if len(schemaName) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		query := stmt.CreateTableAsStmt.GetQuery()
 		if query != nil && query.GetSelectStmt() != nil {
 			result, err := checkSchemaNameRecursive(query.GetSelectStmt(), rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
 	case *parser.Node_ViewStmt:
 		schema := stmt.ViewStmt.View.GetSchemaname()
 		if len(schema) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if stmt.ViewStmt.GetQuery() != nil && stmt.ViewStmt.GetQuery().GetSelectStmt() != nil {
 			result, err := checkSchemaNameRecursive(stmt.ViewStmt.GetQuery().GetSelectStmt(), rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
 	case *parser.Node_IndexStmt:
 		schemaName := stmt.IndexStmt.GetRelation().GetSchemaname()
 		if len(schemaName) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateSeqStmt:
 		sequence := stmt.CreateSeqStmt.GetSequence()
 		if sequence != nil && len(sequence.GetSchemaname()) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateFunctionStmt:
 		functionNames := stmt.CreateFunctionStmt.GetFuncname()
 		if len(functionNames) == 1 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateTrigStmt:
 		relation := stmt.CreateTrigStmt.GetRelation()
 		if relation != nil {
 			owner := relation.GetSchemaname()
 			if len(owner) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_AlterTableStmt:
@@ -1716,19 +1700,19 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if relation != nil {
 			owner := relation.GetSchemaname()
 			if len(owner) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_AlterSeqStmt:
 		sequence := stmt.AlterSeqStmt.GetSequence()
 		if sequence != nil && len(sequence.GetSchemaname()) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_RenameStmt:
 		// alter trigger trigger_test on test rename to new_trigger_name;
 		relation := stmt.RenameStmt.GetRelation()
 		if relation == nil || len(relation.GetSchemaname()) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_DropStmt:
 		objects := stmt.DropStmt.GetObjects()
@@ -1741,11 +1725,11 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				switch stmt.DropStmt.GetRemoveType() {
 				case parser.ObjectType_OBJECT_TRIGGER:
 					if len(items) < 3 {
-						return RuleHandlerMap[rule.Name].Message, nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 					}
 				default:
 					if len(items) < 2 {
-						return RuleHandlerMap[rule.Name].Message, nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 					}
 				}
 			}
@@ -1753,7 +1737,7 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if object.GetObjectWithArgs() != nil {
 				objNames := object.GetObjectWithArgs().GetObjname()
 				if len(objNames) < 2 {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 		}
@@ -1762,23 +1746,23 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		for _, action := range actions {
 			schemaName := action.GetRangeVar().GetSchemaname()
 			if len(schemaName) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_InsertStmt:
 		relation := stmt.InsertStmt.GetRelation()
 		if relation != nil {
 			if len(relation.GetSchemaname()) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		selectStmt := stmt.InsertStmt.GetSelectStmt()
 		if selectStmt != nil && selectStmt.GetSelectStmt() != nil {
 			result, err := checkSchemaNameRecursive(selectStmt.GetSelectStmt(), rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
@@ -1786,7 +1770,7 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		relation := stmt.UpdateStmt.GetRelation()
 		if relation != nil {
 			if len(relation.GetSchemaname()) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.GetTargetList()
@@ -1803,9 +1787,9 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if sl := list.GetResTarget().GetVal().GetSubLink().GetSubselect().GetSelectStmt(); sl != nil {
 				result, err := checkSchemaNameRecursive(sl, rule.Name)
 				if err != nil {
-					return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+					return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 				}
-				if len(result) > 0 {
+				if result != nil {
 					return result, nil
 				}
 			}
@@ -1815,9 +1799,9 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			whereClause.GetSubLink().GetSubselect().GetSelectStmt() != nil {
 			result, err := checkSchemaNameRecursive(whereClause.GetSubLink().GetSubselect().GetSelectStmt(), rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
@@ -1825,7 +1809,7 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		relation := stmt.DeleteStmt.GetRelation()
 		if relation != nil {
 			if len(relation.GetSchemaname()) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		whereClause := stmt.DeleteStmt.GetWhereClause()
@@ -1833,9 +1817,9 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			whereClause.GetSubLink().GetSubselect().GetSelectStmt() != nil {
 			result, err := checkSchemaNameRecursive(whereClause.GetSubLink().GetSubselect().GetSelectStmt(), rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
@@ -1844,26 +1828,26 @@ func rule35(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if selectStmt != nil {
 			result, err := checkSchemaNameRecursive(selectStmt, rule.Name)
 			if err != nil {
-				return "", fmt.Errorf("check schema error for rule[%v]", rule.Name)
+				return nil, fmt.Errorf("check schema error for rule[%v]", rule.Name)
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
 	default:
 	}
-	return "", nil
+	return nil, nil
 }
 
 // rule35方法 checkSchemaNameRecursive: 校验schema是否存在
-func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (string, error) {
+func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (i18nPkg.I18nStr, error) {
 	fromClauses := selectStmt.FromClause
 	for _, fromClause := range fromClauses {
 		if fromClause != nil && fromClause.GetRangeVar() != nil && len(fromClause.GetRangeVar().GetSchemaname()) == 0 {
-			return RuleHandlerMap[ruleName].Message, nil
+			return localizeMessage(RuleHandlerMap[ruleName].Message), nil
 		}
 		if recursiveValidateJoinOwner(fromClause.GetJoinExpr()) {
-			return RuleHandlerMap[ruleName].Message, nil
+			return localizeMessage(RuleHandlerMap[ruleName].Message), nil
 		}
 	}
 
@@ -1872,10 +1856,10 @@ func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (s
 		fromList := whereClause.GetFromExpr().Fromlist
 		for _, from := range fromList {
 			if from != nil && from.GetRangeVar() != nil && len(from.GetRangeVar().GetSchemaname()) == 0 {
-				return RuleHandlerMap[ruleName].Message, nil
+				return localizeMessage(RuleHandlerMap[ruleName].Message), nil
 			}
 			if recursiveValidateJoinOwner(from.GetJoinExpr()) {
-				return RuleHandlerMap[ruleName].Message, nil
+				return localizeMessage(RuleHandlerMap[ruleName].Message), nil
 			}
 		}
 	}
@@ -1889,9 +1873,9 @@ func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (s
 			if sl := arg.GetSubLink().GetSubselect().GetSelectStmt(); sl != nil {
 				result, err := checkSchemaNameRecursive(sl, ruleName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
-				if len(result) > 0 {
+				if result != nil {
 					return result, nil
 				}
 			}
@@ -1904,9 +1888,9 @@ func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (s
 			if stmt != nil {
 				result, err := checkSchemaNameRecursive(stmt, ruleName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
-				if len(result) > 0 {
+				if result != nil {
 					return result, nil
 				}
 			}
@@ -1927,14 +1911,14 @@ func checkSchemaNameRecursive(selectStmt *parser.SelectStmt, ruleName string) (s
 		if sl := list.GetResTarget().GetVal().GetSubLink().GetSubselect().GetSelectStmt(); sl != nil {
 			result, err := checkSchemaNameRecursive(sl, ruleName)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			if len(result) > 0 {
+			if result != nil {
 				return result, nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func recursiveValidateJoinOwner(joinExpr *parser.JoinExpr) bool {
@@ -1958,54 +1942,54 @@ func recursiveValidateJoinOwner(joinExpr *parser.JoinExpr) bool {
 	return false
 }
 
-func rule36(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule36(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_DropStmt:
 		objects := stmt.DropStmt.Objects
 		if len(objects) > 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_DropdbStmt, *parser.Node_DropTableSpaceStmt:
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	default:
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule37(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule37(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_AlterTableStmt:
 		cmd := stmt.AlterTableStmt.GetCmds()[0]
 		if cmd.GetAlterTableCmd().GetSubtype() == parser.AlterTableType_AT_DropColumn {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule38(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule38(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
@@ -2014,26 +1998,26 @@ func rule38(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			subQueries := utils.ExtractSubQueries(node.GetStmt())
 			for _, subQuery := range *subQueries {
 				if countDqlUnions(subQuery) > 0 {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	tableName := ""
@@ -2055,8 +2039,8 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					constraintType == parser.ConstrType_CONSTR_PRIMARY {
 					keys := constraint.GetKeys()
 					for _, key := range keys {
-						if _, ok := indexColumnMap[key.GetString_().GetSval()]; !ok {
-							indexColumnMap[key.GetString_().GetSval()] = key.GetString_().GetSval()
+						if _, ok := indexColumnMap[key.GetString_().GetStr()]; !ok {
+							indexColumnMap[key.GetString_().GetStr()] = key.GetString_().GetStr()
 						}
 					}
 				}
@@ -2072,7 +2056,7 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		// 触发校验规则
 		if len(indexColumnMap) > maxIndexFields {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
 		}
 		// 查询数据库中同一表的所有索引列，如果加上当前新增索引的列超过阈值，也触发规则
 		schemaname := stmt.IndexStmt.GetRelation().GetSchemaname()
@@ -2111,8 +2095,8 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				// alter table test add index idx_constraint_test(col1,col2,col3,col4,col5,col6);
 				typmods := tableCmd.GetDef().GetColumnDef().GetTypeName().GetTypmods()
 				for _, typmod := range typmods {
-					if _, ok := indexColumnMap[typmod.GetString_().GetSval()]; !ok {
-						indexColumnMap[typmod.GetString_().GetSval()] = typmod.GetString_().GetSval()
+					if _, ok := indexColumnMap[typmod.GetString_().GetStr()]; !ok {
+						indexColumnMap[typmod.GetString_().GetStr()] = typmod.GetString_().GetStr()
 					}
 				}
 			case parser.AlterTableType_AT_AddConstraint:
@@ -2122,8 +2106,8 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					typeConstrType == parser.ConstrType_CONSTR_PRIMARY {
 					keys := tableCmd.Def.GetConstraint().Keys
 					for _, key := range keys {
-						if _, ok := indexColumnMap[key.GetString_().GetSval()]; !ok {
-							indexColumnMap[key.GetString_().GetSval()] = key.GetString_().GetSval()
+						if _, ok := indexColumnMap[key.GetString_().GetStr()]; !ok {
+							indexColumnMap[key.GetString_().GetStr()] = key.GetString_().GetStr()
 						}
 					}
 				}
@@ -2132,7 +2116,7 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		// 触发校验规则
 		if len(indexColumnMap) > maxIndexFields {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
 		}
 		// 查询数据库中同一表的所有索引列，如果加上当前新增索引的列超过阈值，也触发规则
 		schemaname := stmt.AlterTableStmt.GetRelation().GetSchemaname()
@@ -2167,19 +2151,19 @@ func rule39(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	// 触发校验规则
 	if len(indexColumnMap) > maxIndexFields {
-		return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexFields), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
-func getTableIndexColumnListForRule39(pgContext *PgContext, schemaname string, tableName string) (map[string]string, string, error) {
+func getTableIndexColumnListForRule39(pgContext *PgContext, schemaname string, tableName string) (map[string]string, i18nPkg.I18nStr, error) {
 	indexColumnMap := make(map[string]string)
 	if pgContext.Executor == nil {
-		return indexColumnMap, "", nil
+		return indexColumnMap, nil, nil
 	}
 	indexesInfo, err := pgContext.GetTableIndexesInfo(schemaname, tableName)
 	if err != nil {
-		return indexColumnMap, "", err
+		return indexColumnMap, nil, err
 	}
 	for _, indexInfo := range indexesInfo {
 		indexDDL := indexInfo.IndexDDL
@@ -2188,7 +2172,7 @@ func getTableIndexColumnListForRule39(pgContext *PgContext, schemaname string, t
 		}
 		ast, err := SqlParserFunc(indexDDL)
 		if err != nil {
-			return indexColumnMap, "", fmt.Errorf("parse sql=%s failed: %v", indexDDL, err)
+			return indexColumnMap, nil, fmt.Errorf("parse sql=%s failed: %v", indexDDL, err)
 		}
 		switch stmt := ast.(*parser.RawStmt).GetStmt().GetNode().(type) {
 		case *parser.Node_IndexStmt:
@@ -2200,7 +2184,7 @@ func getTableIndexColumnListForRule39(pgContext *PgContext, schemaname string, t
 			}
 		}
 	}
-	return indexColumnMap, "", nil
+	return indexColumnMap, nil, nil
 }
 
 func countDqlUnions(selectStmt *parser.SelectStmt) int {
@@ -2223,18 +2207,18 @@ func countDqlUnionsRecursive(selectStmt *parser.SelectStmt, unionNumber *int) {
 	}
 }
 
-func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -2274,7 +2258,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				for _, name := range names {
 					nameOb, ok := name.Node.(*parser.Node_String_)
 					if ok {
-						columnType = strings.ToLower(nameOb.String_.GetSval())
+						columnType = strings.ToLower(nameOb.String_.GetStr())
 					}
 				}
 				setColumnDefaultValueIntoPgContext(pgContext, schema, tableName, columnName, columnType)
@@ -2299,7 +2283,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, key := range keys {
 						for _, columnDef := range stmt.CreateStmt.TableElts {
 							columnName := columnDef.GetColumnDef().GetColname()
-							keyStr := key.GetString_().GetSval()
+							keyStr := key.GetString_().GetStr()
 							if strings.Compare(keyStr, columnName) == 0 {
 								// 校验serial和bigserial
 								isAutoIncrement = validateAutoIncrementPrimaryKey(columnDef)
@@ -2327,7 +2311,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 		// 不是自增主键走规则
 		if isPrimaryKey && !isAutoIncrement {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_AlterTableStmt:
 		schema := stmt.AlterTableStmt.Relation.Schemaname
@@ -2356,7 +2340,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, name := range names {
 						nameOb, ok := name.Node.(*parser.Node_String_)
 						if ok {
-							columnType = strings.ToLower(nameOb.String_.GetSval())
+							columnType = strings.ToLower(nameOb.String_.GetStr())
 						}
 					}
 					setColumnDefaultValueIntoPgContext(pgContext, schema, tableName, autoIncrementColumnName, columnType)
@@ -2367,7 +2351,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, funcName := range funcNames {
 						nameOb, ok := funcName.Node.(*parser.Node_String_)
 						if ok {
-							functionName := strings.ToLower(nameOb.String_.GetSval())
+							functionName := strings.ToLower(nameOb.String_.GetStr())
 							if functionName == "nextval" {
 								isAutoIncrement = true
 								break
@@ -2382,7 +2366,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, name := range names {
 						nameOb, ok := name.Node.(*parser.Node_String_)
 						if ok {
-							columnType = strings.ToLower(nameOb.String_.GetSval())
+							columnType = strings.ToLower(nameOb.String_.GetStr())
 						}
 					}
 					setColumnDefaultValueIntoPgContext(pgContext, schema, tableName, autoIncrementColumnName, columnType)
@@ -2395,12 +2379,12 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				if isPrimaryKey {
 					keys := constraint.GetKeys()
 					if len(keys) == 1 {
-						primaryColumnName = keys[0].GetString_().GetSval()
+						primaryColumnName = keys[0].GetString_().GetStr()
 					}
 				}
 				// 从上下文中获取列的默认值，并判断是否为自增列
 				if _, ok := pgContext.DatabaseInfo.SchemaInfoMap[schema]; !ok {
-					return "", fmt.Errorf("schema %s not exist", schema)
+					return nil, fmt.Errorf("schema %s not exist", schema)
 				}
 				tableInfoList := pgContext.DatabaseInfo.SchemaInfoMap[schema].TableInfoList
 				for _, tableInfo := range tableInfoList {
@@ -2426,7 +2410,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				// 从数据中获取字段id的定义和约束，看是否存在自增
 				resultMap, err := pgContext.GetTableAutoIncrementColumnDefaultValue(schema, tableName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				// 写入列默认值到pgContext对应表中
 				for key, value := range resultMap {
@@ -2449,7 +2433,7 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				if len(resultMap) > 0 {
 					isAutoIncrement = true
 					if _, isExistColumn := resultMap[primaryColumnName]; isExistColumn {
-						return "", nil
+						return nil, nil
 					}
 				}
 				if isAutoIncrement {
@@ -2459,11 +2443,11 @@ func rule40(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 		if !isPrimaryKey || !isAutoIncrement || primaryColumnName != autoIncrementColumnName {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	default:
 	}
-	return "", nil
+	return nil, nil
 }
 
 func setColumnDefaultValueIntoPgContext(pgContext *PgContext, schema, tableName, columnName, columnType string) {
@@ -2521,7 +2505,7 @@ func validateAutoIncrementPrimaryKey(columnDef *parser.Node) bool {
 	for _, name := range names {
 		nameOb, ok := name.Node.(*parser.Node_String_)
 		if ok {
-			typeName := strings.ToLower(nameOb.String_.GetSval())
+			typeName := strings.ToLower(nameOb.String_.GetStr())
 			if typeName == "serial" {
 				isAutoIncrement = true
 				break
@@ -2561,7 +2545,7 @@ func validateDefaultNextval(tableConstraints []*parser.Node) bool {
 			for _, funcName := range funcNames {
 				nameOb, ok := funcName.Node.(*parser.Node_String_)
 				if ok {
-					functionName := strings.ToLower(nameOb.String_.GetSval())
+					functionName := strings.ToLower(nameOb.String_.GetStr())
 					if functionName == "nextval" {
 						isAutoIncrement = true
 						break
@@ -2573,18 +2557,18 @@ func validateDefaultNextval(tableConstraints []*parser.Node) bool {
 	return isAutoIncrement
 }
 
-func rule41(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule41(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -2625,7 +2609,7 @@ func rule41(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	for _, subQuery := range subQueries {
 		// 表连接数：表的总数-1
 		if len(subQuery.FromClause)-1 > expectTableConnectNumber {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectTableConnectNumber), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, expectTableConnectNumber), nil
 		}
 		fromClause := subQuery.FromClause
 		for _, from := range fromClause {
@@ -2635,11 +2619,11 @@ func rule41(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			// 校验join表连接个数，表连接数 等于 表的总数-1 等于 join的个数
 			joinCount := getJoinCountForRule41(from.GetJoinExpr(), currentSchemaName)
 			if joinCount > expectTableConnectNumber {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectTableConnectNumber), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectTableConnectNumber), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func getJoinCountForRule41(joinExpr *parser.JoinExpr, schema string) int {
@@ -2660,18 +2644,18 @@ func countJoins(node *parser.JoinExpr, schema string) int {
 	return joinCount
 }
 
-func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -2703,7 +2687,7 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				// 获取索引列
 				columns, err = getIndexColumnsFromDb(schemaName, tableName, pgContext)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 			}
 			if tableNameAlias != nil {
@@ -2712,7 +2696,7 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				tableIndexColumnMap[tableName] = columns
 			}
 			if findIndexColumnUsingFunctionOrExpression(stmt.UpdateStmt.WhereClause, tableIndexColumnMap) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.TargetList
@@ -2735,7 +2719,7 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				// 获取索引列
 				columns, err = utils.GetTableIndexColumns(pgContext.Executor, schemaName, tableName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 			}
 			if tableNameAlias != nil {
@@ -2744,7 +2728,7 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				tableIndexColumnMap[tableName] = columns
 			}
 			if findIndexColumnUsingFunctionOrExpression(stmt.DeleteStmt.WhereClause, tableIndexColumnMap) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
@@ -2767,7 +2751,7 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					// 获取索引列
 					columns, err = utils.GetTableIndexColumns(pgContext.Executor, schemaName, tableName)
 					if err != nil {
-						return "", err
+						return nil, err
 					}
 				}
 
@@ -2779,20 +2763,20 @@ func rule42(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 		if findIndexColumnUsingFunctionOrExpression(subQuery.WhereClause, tableIndexColumnMap) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if subQuery.GetLarg() != nil {
 			if findIndexColumnUsingFunctionOrExpression(subQuery.GetLarg().GetWhereClause(), tableIndexColumnMap) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		if subQuery.GetRarg() != nil {
 			if findIndexColumnUsingFunctionOrExpression(subQuery.GetRarg().GetWhereClause(), tableIndexColumnMap) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则42方法：递归检查WHERE条件中索引列是否使用了函数或表达式
@@ -2876,7 +2860,7 @@ func validateIsIndexColumn(fields []*parser.Node, tableIndexColumnMap map[string
 	if len(fields) == 0 {
 		return false
 	}
-	field := fields[0].GetString_().GetSval()
+	field := fields[0].GetString_().GetStr()
 	if len(fields) == 1 {
 		for _, indexColumns := range tableIndexColumnMap {
 			for _, indexColumn := range indexColumns {
@@ -2889,7 +2873,7 @@ func validateIsIndexColumn(fields []*parser.Node, tableIndexColumnMap map[string
 		for key, indexColumns := range tableIndexColumnMap {
 			// 表名或表别名相同
 			if key == field {
-				currentColumn := fields[1].GetString_().GetSval()
+				currentColumn := fields[1].GetString_().GetStr()
 				for _, indexColumn := range indexColumns {
 					// 列是索引列
 					if indexColumn == currentColumn {
@@ -2958,13 +2942,13 @@ func recursiveHandleIndexColumnCastFunction(expr *parser.Node, tableIndexColumnM
 	return false
 }
 
-func rule43(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule43(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -2982,7 +2966,7 @@ func rule43(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.UpdateStmt.WhereClause)...)
 		if stmt.UpdateStmt.WhereClause != nil && stmt.UpdateStmt.WhereClause.GetSubLink() == nil {
 			if containsExpression(stmt.UpdateStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.TargetList
@@ -2994,7 +2978,7 @@ func rule43(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause != nil && stmt.DeleteStmt.WhereClause.GetSubLink() == nil {
 			if containsExpression(stmt.DeleteStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
@@ -3002,20 +2986,20 @@ func rule43(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	for _, subQuery := range subQueries {
 		if containsExpression(subQuery.WhereClause) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if subQuery.GetLarg() != nil {
 			if containsExpression(subQuery.GetLarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		if subQuery.GetRarg() != nil {
 			if containsExpression(subQuery.GetRarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则43方法：递归检查 WHERE 条件中是否使用了表达式
@@ -3103,18 +3087,18 @@ func hasColumnFunction(expr *parser.Node, isFucCallOp bool) bool {
 	return false
 }
 
-func rule44(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule44(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -3163,7 +3147,7 @@ func rule44(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					// 获取表对应列
 					columns, err = utils.GetTableColumns(pgContext.Executor, schemaName, tableName)
 					if err != nil {
-						return "", err
+						return nil, err
 					}
 				}
 				if tableNameAlias != nil {
@@ -3175,10 +3159,10 @@ func rule44(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 
 		if findDifferentTableColumnOrCondition(subQuery.WhereClause, tableColumnMap) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则44方法：找到不同表列使用or连接的方法
@@ -3205,7 +3189,7 @@ func findDifferentTableColumnOrCondition(node *parser.Node, tableColumnMap map[s
 				if len(fields) == 0 {
 					continue
 				}
-				field := fields[0].GetString_().GetSval()
+				field := fields[0].GetString_().GetStr()
 				if len(fields) == 1 {
 					for key, columns := range tableColumnMap {
 						for _, column := range columns {
@@ -3241,13 +3225,13 @@ func validateDifferentTableForOrCondition(differentTableMap map[string]string, k
 	return false
 }
 
-func rule45(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (string, error) {
+func rule45(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	nodes, err := pkgParser.ParseSQL(rawSql)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(nodes) <= 0 {
-		return "", fmt.Errorf("can not find parse tree from SQL")
+		return nil, fmt.Errorf("can not find parse tree from SQL")
 	}
 
 	// filter out IURD
@@ -3257,28 +3241,28 @@ func rule45(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []s
 	case *parser.Node_InsertStmt:
 	case *parser.Node_UpdateStmt:
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if pgContext.UsingType == UsingTypeOffline {
-		return "", nil
+		return nil, nil
 	}
 	e := pgContext.Executor
 
 	jsonQueryPlans, err := getExplainResult(pgContext, rawSql, e)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if result := checkFullTableScan(jsonQueryPlans); result {
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 func checkFullTableScan(queryPlans *[]PlanType) bool {
@@ -3308,13 +3292,13 @@ func checkPlanForFullTableScan(plan PlanType) bool {
 	return false
 }
 
-func rule47(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule47(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -3333,7 +3317,7 @@ func rule47(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.UpdateStmt.WhereClause)...)
 		if stmt.UpdateStmt.WhereClause != nil && stmt.UpdateStmt.WhereClause.GetSubLink() == nil {
 			if findWhereNotQuery(stmt.UpdateStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.TargetList
@@ -3345,7 +3329,7 @@ func rule47(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause != nil && stmt.DeleteStmt.WhereClause.GetSubLink() == nil {
 			if findWhereNotQuery(stmt.DeleteStmt.WhereClause) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
@@ -3353,20 +3337,20 @@ func rule47(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 	for _, subQuery := range subQueries {
 		if findWhereNotQuery(subQuery.WhereClause) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if subQuery.GetLarg() != nil {
 			if findWhereNotQuery(subQuery.GetLarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		if subQuery.GetRarg() != nil {
 			if findWhereNotQuery(subQuery.GetRarg().GetWhereClause()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // 规则47方法：查找where条件中的!=、<>、NOT IN、NOT EXISTS、NOT LIKE以及NOT
@@ -3378,7 +3362,7 @@ func findWhereNotQuery(whereClause *parser.Node) bool {
 	isNotOperate := func(names []*parser.Node) bool {
 		for _, name := range names {
 			if name != nil {
-				switch name.GetString_().GetSval() {
+				switch name.GetString_().GetStr() {
 				case "<>", "!~~":
 					return true
 				}
@@ -3402,17 +3386,18 @@ func findWhereNotQuery(whereClause *parser.Node) bool {
 	return false
 }
 
-func rule48(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
-	return validateCreateTableMustField(rule, astSQL, "expect_created_time")
+func rule48(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
+	s, err := validateCreateTableMustField(rule, astSQL, "expect_created_time")
+	return s, err
 }
 
-func validateCreateTableMustField(rule *driverV2.Rule, astSQL interface{}, mustFiled string) (string, error) {
+func validateCreateTableMustField(rule *driverV2.Rule, astSQL interface{}, mustFiled string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	expectCreatedTimeColumn := rule.Params.GetParam(mustFiled).String()
@@ -3425,7 +3410,7 @@ func validateCreateTableMustField(rule *driverV2.Rule, astSQL interface{}, mustF
 			if strings.Compare(strings.ToLower(colName), strings.ToLower(expectCreatedTimeColumn)) == 0 {
 				names := elt.GetColumnDef().GetTypeName().GetNames()
 				for _, name := range names {
-					if strings.ToUpper(name.GetString_().GetSval()) == "TIMESTAMP" {
+					if strings.ToUpper(name.GetString_().GetStr()) == "TIMESTAMP" {
 						isExistCreateTimeColumn = true
 						break
 					}
@@ -3436,28 +3421,29 @@ func validateCreateTableMustField(rule *driverV2.Rule, astSQL interface{}, mustF
 			}
 		}
 		if !isExistCreateTimeColumn {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule49(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
-	return validateCreateTableMustField(rule, astSQL, "expect_modified_time")
+func rule49(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
+	s, err := validateCreateTableMustField(rule, astSQL, "expect_modified_time")
+	return s, err
 }
 
-func rule50(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule50(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	expectObjectNameCharacterMaxLength := rule.Params.GetParam("expect_object_name_character_max_length").Int()
-	message := fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectObjectNameCharacterMaxLength)
+	message := localizeMessage(RuleHandlerMap[rule.Name].Message, expectObjectNameCharacterMaxLength)
 	// 检查以下对象：表、函数、视图、序列、字段等
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_CreateStmt:
@@ -3508,7 +3494,7 @@ func rule50(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		// 校验函数长度
 		funcNames := stmt.CreateFunctionStmt.Funcname
 		for _, funcName := range funcNames {
-			if len(funcName.GetString_().GetSval()) > expectObjectNameCharacterMaxLength {
+			if len(funcName.GetString_().GetStr()) > expectObjectNameCharacterMaxLength {
 				return message, nil
 			}
 		}
@@ -3532,21 +3518,21 @@ func rule50(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -3569,14 +3555,14 @@ func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if elt.GetConstraint() != nil && elt.GetConstraint().GetContype() == parser.ConstrType_CONSTR_FOREIGN {
 				fkAttrs := elt.GetConstraint().GetFkAttrs()
 				for _, fkAttr := range fkAttrs {
-					fkColumns = append(fkColumns, fkAttr.GetString_().GetSval())
+					fkColumns = append(fkColumns, fkAttr.GetString_().GetStr())
 				}
 				isCreateForeignKey = true
 			}
 			if elt.GetConstraint() != nil && elt.GetConstraint().GetContype() == parser.ConstrType_CONSTR_UNIQUE {
 				keys := elt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					indexColumns = append(indexColumns, key.GetString_().GetSval())
+					indexColumns = append(indexColumns, key.GetString_().GetStr())
 				}
 			}
 		}
@@ -3590,13 +3576,13 @@ func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 		if len(fkColumns) > 0 && len(poses) == len(fkColumns) && sort.IntsAreSorted(poses) {
-			return "", nil
+			return nil, nil
 		}
 
 		// 获取nextSQL中是否有创建索引sql，有相关列创建sql也是校验通过，不走规则的
 		isExistIndex, err = validateNextSqlIsExistIndexForForeignColumn(currentSchemaName, schemaNameCreate, tableNameCreate, fkColumns, nextSQL)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 	case *parser.Node_AlterTableStmt:
 		schemaName := stmt.AlterTableStmt.Relation.Schemaname
@@ -3616,22 +3602,22 @@ func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					fkAttrs := cmdNode.AlterTableCmd.GetDef().GetConstraint().GetFkAttrs()
 					fkColumns := make([]string, 0)
 					for _, fkAttr := range fkAttrs {
-						fkColumns = append(fkColumns, fkAttr.GetString_().GetSval())
+						fkColumns = append(fkColumns, fkAttr.GetString_().GetStr())
 					}
 					// 获取nextSQL中是否有创建索引sql，有相关列创建sql也是校验通过，不走规则的
 					isExistIndex, err = validateNextSqlIsExistIndexForForeignColumn(currentSchemaName, schemaName, tableName, fkColumns, nextSQL)
 					if err != nil {
-						return "", err
+						return nil, err
 					}
 					if isExistIndex {
-						return "", nil
+						return nil, nil
 					}
 					if !isExistIndex {
 						indexColumnsRows := pgContext.GetTableIndexColumns(schemaName, tableName)
 						if len(indexColumnsRows) == 0 {
 							indexColumnsRows, err = getIndexColumnsFromDb(schemaName, tableName, pgContext)
 							if err != nil {
-								return "", err
+								return nil, err
 							}
 						}
 						for _, indexColumns := range indexColumnsRows {
@@ -3647,7 +3633,7 @@ func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 								}
 							}
 							if len(fkColumns) > 0 && len(poses) == len(fkColumns) && sort.IntsAreSorted(poses) {
-								return "", err
+								return nil, err
 							}
 						}
 					}
@@ -3657,9 +3643,9 @@ func rule51(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	}
 
 	if isCreateForeignKey && !isExistIndex {
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 // getIndexColumnsFromDb :从数据库中获取当前表的索引列信息
@@ -3728,7 +3714,7 @@ func validateNextSqlIsExistIndexForForeignColumn(currentSchema, schema, table st
 						poses := make([]int, 0)
 						for _, column := range columns {
 							for i, key := range keys {
-								if schemaName == schema && tableName == table && key.GetString_().GetSval() == column {
+								if schemaName == schema && tableName == table && key.GetString_().GetStr() == column {
 									poses = append(poses, i)
 									break
 								}
@@ -3745,23 +3731,23 @@ func validateNextSqlIsExistIndexForForeignColumn(currentSchema, schema, table st
 	return false, nil
 }
 
-func rule52(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule52(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
 	expectIndexMinCellDivisionPercentage := rule.Params.GetParam("expect_index_min_cell_division_percentage").Int()
-	message := fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectIndexMinCellDivisionPercentage)
+	message := localizeMessage(RuleHandlerMap[rule.Name].Message, expectIndexMinCellDivisionPercentage)
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_IndexStmt:
 		schemaName := stmt.IndexStmt.Relation.Schemaname
@@ -3774,7 +3760,7 @@ func rule52(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			indexColumn := indexParam.GetIndexElem().GetName()
 			selectivity, err := pgContext.ComputeIndexCellDivision(schemaName, tableName, indexColumn)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if selectivity < expectIndexMinCellDivisionPercentage {
 				return message, nil
@@ -3782,21 +3768,21 @@ func rule52(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -3812,13 +3798,13 @@ func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if subQueries[0].FromClause != nil && subQueries[0].WhereClause != nil {
 				isPassValidate, err := isFirstIndexInWhere(currentSchemaName, subQueries[0], pgContext)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				if !isPassValidate {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
-			return "", nil
+			return nil, nil
 		}
 	case *parser.Node_UpdateStmt:
 		fromClause := stmt.UpdateStmt.FromClause
@@ -3835,10 +3821,10 @@ func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			whereClause := stmt.UpdateStmt.WhereClause
 			isPassValidate, err := validateIndexFirstColumnInWhere(schemaName, tableName, whereClause, pgContext)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if !isPassValidate {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		targetList := stmt.UpdateStmt.TargetList
@@ -3849,7 +3835,7 @@ func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if stmt.DeleteStmt.WhereClause != nil && stmt.DeleteStmt.WhereClause.GetSubLink() == nil {
 			schemaName := stmt.DeleteStmt.Relation.Schemaname
@@ -3860,10 +3846,10 @@ func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			whereClause := stmt.DeleteStmt.WhereClause
 			isPassValidate, err := validateIndexFirstColumnInWhere(schemaName, tableName, whereClause, pgContext)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if !isPassValidate {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
@@ -3883,14 +3869,14 @@ func rule53(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		for _, selectStmt := range selectStmts {
 			isPassValidate, err := isFirstIndexInWhere(currentSchemaName, selectStmt, pgContext)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if !isPassValidate {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func isFirstIndexInWhere(currentSchemaName string, subQuery *parser.SelectStmt, pgContext *PgContext) (bool, error) {
@@ -3956,7 +3942,7 @@ func validateIndexFirstColumnInWhere(schemaName, tableName string, whereClause *
 		}
 	}
 	for _, field := range fields {
-		columnName := field.GetString_().GetSval()
+		columnName := field.GetString_().GetStr()
 		// 包含当前条件列的slice
 		compositeIndexSlice := make([]string, 0)
 		for _, indexColumns := range indexColumnSlice {
@@ -3984,9 +3970,9 @@ func validateIndexFirstColumnInWhere(schemaName, tableName string, whereClause *
 				indexColumnArray := strings.Split(compositeIndex, ",")
 				for i, conditionField := range fields {
 					// indexColumnArray[0]联合索引的第一列，比如：[column1,column2],column1是第一列
-					if indexColumnArray[0] == conditionField.GetString_().GetSval() {
+					if indexColumnArray[0] == conditionField.GetString_().GetStr() {
 						// 条件列使用了范围查询，返回false，走规则
-						if len(operates) != 0 && operates[i] != nil && operates[i].GetString_().GetSval() != "=" {
+						if len(operates) != 0 && operates[i] != nil && operates[i].GetString_().GetStr() != "=" {
 							return false, nil
 						}
 						isFirstColumnInWhere = true
@@ -4027,37 +4013,37 @@ func getIndexColumnListFromDb(schemaName, tableName string, pgContext *PgContext
 	return indexColumnSlice, nil
 }
 
-func rule54(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule54(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	switch stmt := node.GetStmt().GetNode().(type) {
 	case *parser.Node_CreateSchemaStmt:
 		schemaName := stmt.CreateSchemaStmt.Schemaname
 		if !validateObjectName(schemaName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateStmt:
 		tableName := stmt.CreateStmt.Relation.Relname
 		if !validateObjectName(tableName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		tableElts := stmt.CreateStmt.GetTableElts()
 		for _, elt := range tableElts {
 			colName := elt.GetColumnDef().GetColname()
 			if !validateObjectName(colName) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_CreateTableAsStmt:
 		relName := stmt.CreateTableAsStmt.Into.Rel.Relname
 		if !validateObjectName(relName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_AlterTableStmt:
 		var cmdNode *parser.Node_AlterTableCmd
@@ -4068,7 +4054,7 @@ func rule54(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 			if cmdNode.AlterTableCmd.GetSubtype() == parser.AlterTableType_AT_AddColumn {
 				if !validateObjectName(cmdNode.AlterTableCmd.Def.GetColumnDef().GetColname()) {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 			break
@@ -4080,56 +4066,56 @@ func rule54(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		case parser.ObjectType_OBJECT_TABLE, parser.ObjectType_OBJECT_COLUMN, parser.ObjectType_OBJECT_SEQUENCE:
 			newName = stmt.RenameStmt.Newname
 			if !validateObjectName(newName) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_CreateFunctionStmt:
 		// 校验函数名
 		funcNames := stmt.CreateFunctionStmt.Funcname
 		for _, funcName := range funcNames {
-			if !validateObjectName(funcName.GetString_().GetSval()) {
-				return RuleHandlerMap[rule.Name].Message, nil
+			if !validateObjectName(funcName.GetString_().GetStr()) {
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_AlterFunctionStmt:
 		// 校验函数名
 		funcName := stmt.AlterFunctionStmt.Func.String()
 		if !validateObjectName(funcName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_ViewStmt:
 		// 校验视图名
 		relName := stmt.ViewStmt.View.Relname
 		if !validateObjectName(relName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_IndexStmt:
 		// 校验create index索引名
 		indexName := stmt.IndexStmt.GetIdxname()
 		if !validateObjectName(indexName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateTrigStmt:
 		// 校验触发器名
 		triggerName := stmt.CreateTrigStmt.Trigname
 		if !validateObjectName(triggerName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateTableSpaceStmt:
 		// 校验表空间名
 		tablespaceName := stmt.CreateTableSpaceStmt.Tablespacename
 		if !validateObjectName(tablespaceName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	case *parser.Node_CreateSeqStmt:
 		// 校验序列名
 		relName := stmt.CreateSeqStmt.Sequence.Relname
 		if !validateObjectName(relName) {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 // validateObjectName :校验对象名为：数据库对象名必须只包含小写字母，下划线，数字。且不能以数字开头
@@ -4149,17 +4135,17 @@ func validateObjectName(objectName string) bool {
 	}
 }
 
-func rule55(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule55(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	expectBindVariableMaxNumber := rule.Params.GetParam("expect_bind_variable_max_number").Int()
-	message := fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectBindVariableMaxNumber)
+	message := localizeMessage(RuleHandlerMap[rule.Name].Message, expectBindVariableMaxNumber)
 
 	actualBindVariableMaxNumber := 0
 	var subQueries []*parser.SelectStmt
@@ -4212,7 +4198,7 @@ func rule55(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	if actualBindVariableMaxNumber > expectBindVariableMaxNumber {
 		return message, nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 func getVariableNumberForTargetList(targetList []*parser.Node) int {
@@ -4240,13 +4226,13 @@ func getVariableNumberForWhereClause(whereClause *parser.Node) int {
 	return actualBindVariableMaxNumber
 }
 
-func rule56(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule56(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	expectFixedPrefix := rule.Params.GetParam("expect_fixed_prefix").String()
@@ -4257,22 +4243,22 @@ func rule56(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if relPersistence == "t" {
 			tableName := stmt.CreateStmt.GetRelation().GetRelname()
 			if !strings.HasPrefix(strings.ToLower(tableName), strings.ToLower(expectFixedPrefix)) {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule57(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (string, error) {
+func rule57(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 
 	result, err := parser.Scan(sql)
 	if err != nil {
-		return "", nil
+		return nil, nil
 	}
 	tokens := result.GetTokens()
 	for _, token := range tokens {
@@ -4284,19 +4270,19 @@ func rule57(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 		case parser.KeywordKind_RESERVED_KEYWORD, parser.KeywordKind_UNRESERVED_KEYWORD,
 			parser.KeywordKind_TYPE_FUNC_NAME_KEYWORD, parser.KeywordKind_COL_NAME_KEYWORD:
 			if isMixedCase(content) {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		case parser.KeywordKind_NO_KEYWORD:
 			// 校验count/COUNT
 			if strings.ToLower(content) == "count" {
 				if isMixedCase(content) {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 // 规则57方法：校验字符串是否大小写混合，true:是;false:否
@@ -4306,18 +4292,18 @@ func isMixedCase(s string) bool {
 	return regex.MatchString(s)
 }
 
-func rule59(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule59(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -4342,7 +4328,7 @@ func rule59(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -4379,14 +4365,14 @@ func rule59(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 
 		if lColumnType != rColumnType {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func recursiveSetTableMapForRule59(joinExpr *parser.JoinExpr, currentSchemaName string, pgContext *PgContext, tableNameMap map[string]map[string]string, tableAliasMap map[string]string) (string, error) {
+func recursiveSetTableMapForRule59(joinExpr *parser.JoinExpr, currentSchemaName string, pgContext *PgContext, tableNameMap map[string]map[string]string, tableAliasMap map[string]string) (i18nPkg.I18nStr, error) {
 	lArg, rArg := joinExpr.GetLarg(), joinExpr.GetRarg()
 	if lArg != nil && lArg.GetRangeVar() != nil {
 		msg, err := setMapForRule59(lArg, currentSchemaName, pgContext, tableNameMap, tableAliasMap)
@@ -4412,13 +4398,13 @@ func recursiveSetTableMapForRule59(joinExpr *parser.JoinExpr, currentSchemaName 
 			return msg, err
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func setMapForRule59(arg *parser.Node, currentSchemaName string, pgContext *PgContext, tableNameMap map[string]map[string]string, tableAliasMap map[string]string) (string, error) {
+func setMapForRule59(arg *parser.Node, currentSchemaName string, pgContext *PgContext, tableNameMap map[string]map[string]string, tableAliasMap map[string]string) (i18nPkg.I18nStr, error) {
 	tableMap, aliasMap, err := setTableMapForRule59(arg.GetRangeVar(), currentSchemaName, pgContext)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for key, value := range tableMap {
 		tableNameMap[key] = value
@@ -4426,7 +4412,7 @@ func setMapForRule59(arg *parser.Node, currentSchemaName string, pgContext *PgCo
 	for key, value := range aliasMap {
 		tableAliasMap[key] = value
 	}
-	return "", nil
+	return nil, nil
 }
 
 func setTableMapForRule59(rangeVar *parser.RangeVar, currentSchemaName string, pgContext *PgContext) (
@@ -4478,19 +4464,19 @@ func getColumnTypeForRule59(fields []*parser.Node, tableAliasMap map[string]stri
 	columnType := ""
 	// fields长度为2,是有表别名；长度为1,是没有表别名
 	if len(fields) == 2 {
-		tableAliasName := fields[0].GetString_().GetSval()
+		tableAliasName := fields[0].GetString_().GetStr()
 		tableName, ok := tableAliasMap[tableAliasName]
 		if ok {
 			columnMap, ok := tableNameMap[tableName]
 			if ok {
-				columnTypeDb, ok := columnMap[fields[1].GetString_().GetSval()]
+				columnTypeDb, ok := columnMap[fields[1].GetString_().GetStr()]
 				if ok {
 					columnType = columnTypeDb
 				}
 			}
 		}
 	} else if len(fields) == 1 {
-		columnName := fields[0].GetString_().GetSval()
+		columnName := fields[0].GetString_().GetStr()
 		for _, columnMapValue := range tableNameMap {
 			for columnNameKey, columnTypeValue := range columnMapValue {
 				if columnName == columnNameKey {
@@ -4552,18 +4538,18 @@ func getExprForRule59(joinExpr *parser.JoinExpr) ([]*parser.Node, []*parser.Node
 	return lExprList, rExprList
 }
 
-func rule60(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule60(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -4572,26 +4558,26 @@ func rule60(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if !stmt.CreateFunctionStmt.IsProcedure {
 			// create function xxx 不是create or replace function xxx
 			if !stmt.CreateFunctionStmt.Replace {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 			schemaName, functionName := currentSchemaName, ""
 			funcName := stmt.CreateFunctionStmt.Funcname
 			parameters := stmt.CreateFunctionStmt.Parameters
 			if len(funcName) == 2 {
-				schemaName = funcName[0].GetString_().GetSval()
-				functionName = funcName[1].GetString_().GetSval()
+				schemaName = funcName[0].GetString_().GetStr()
+				functionName = funcName[1].GetString_().GetStr()
 			} else {
-				functionName = funcName[0].GetString_().GetSval()
+				functionName = funcName[0].GetString_().GetStr()
 			}
 
 			// 校验无参自定义函数
 			if parameters == nil {
 				result, err := pgContext.ValidateFunctionExistInDb(pgContext.CurrentDatabase, schemaName, functionName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				if !result {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 
@@ -4599,19 +4585,19 @@ func rule60(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			// 校验有参自定义函数
 			data, err = pgContext.GetFunctionInfoList(pgContext.CurrentDatabase, schemaName, functionName)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(data) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 
 			parameterTypes := make([]string, 0)
 			for _, parameter := range parameters {
 				var parameterType = ""
 				if len(parameter.GetFunctionParameter().GetArgType().GetNames()) == 2 {
-					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetSval()
+					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetStr()
 				} else {
-					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetSval()
+					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetStr()
 				}
 				if strings.HasPrefix(parameterType, "int") {
 					parameterType = "integer"
@@ -4653,26 +4639,26 @@ func rule60(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				}
 			}
 			if !isMatchParameterType {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -4681,24 +4667,24 @@ func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if stmt.CreateFunctionStmt.IsProcedure {
 			// create procedure xxx 不是create or replace procedure xxx 直接触发规则
 			if !stmt.CreateFunctionStmt.Replace {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 			schemaName, functionName := currentSchemaName, ""
 			funcName := stmt.CreateFunctionStmt.Funcname
 			parameters := stmt.CreateFunctionStmt.Parameters
 			if len(funcName) == 2 {
-				schemaName = funcName[0].GetString_().GetSval()
-				functionName = funcName[1].GetString_().GetSval()
+				schemaName = funcName[0].GetString_().GetStr()
+				functionName = funcName[1].GetString_().GetStr()
 			} else {
-				functionName = funcName[0].GetString_().GetSval()
+				functionName = funcName[0].GetString_().GetStr()
 			}
 			if parameters == nil {
 				result, err := pgContext.ValidateProcedureExistInDb(pgContext.CurrentDatabase, schemaName, functionName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				if !result {
-					return RuleHandlerMap[rule.Name].Message, nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 				}
 			}
 
@@ -4706,10 +4692,10 @@ func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			// 从数据库查询存储过程信息列表
 			procedureInfoList, err = pgContext.GetProcedureInfoList(pgContext.CurrentDatabase, schemaName, functionName)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(procedureInfoList) == 0 {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 
 			parameterTypes := make([]string, 0)
@@ -4717,9 +4703,9 @@ func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			for _, parameter := range parameters {
 				var parameterType = ""
 				if len(parameter.GetFunctionParameter().GetArgType().GetNames()) == 2 {
-					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetSval()
+					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetStr()
 				} else {
-					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetSval()
+					parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetStr()
 				}
 				if strings.HasPrefix(parameterType, "int") {
 					parameterType = "integer"
@@ -4777,26 +4763,26 @@ func rule61(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				}
 			}
 			if !isMatchParameterType {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule62(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule62(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -4818,14 +4804,14 @@ func rule62(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				indexColumns := make([]string, 0)
 				keys := elt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					indexColumns = append(indexColumns, key.GetString_().GetSval())
+					indexColumns = append(indexColumns, key.GetString_().GetStr())
 				}
 				indexColumnsStr := strings.Join(indexColumns, ",")
 				uniqueIndexMap[indexColumnsStr] = indexColumnsStr
 			}
 		}
 		if len(uniqueIndexMap) > expectMaxIndexNumber {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
 		}
 	case *parser.Node_AlterTableStmt:
 		schemaName := stmt.AlterTableStmt.Relation.Schemaname
@@ -4844,10 +4830,10 @@ func rule62(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					cmdNode.AlterTableCmd.GetDef().GetConstraint().GetContype() == parser.ConstrType_CONSTR_PRIMARY {
 					indexCount, err := getIndexCountForRule62(pgContext, schemaName, tableName)
 					if err != nil {
-						return "", err
+						return nil, err
 					}
 					if indexCount+1 > expectMaxIndexNumber {
-						return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
 					}
 				}
 			}
@@ -4860,14 +4846,14 @@ func rule62(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		tableName := stmt.IndexStmt.Relation.Relname
 		indexCount, err := getIndexCountForRule62(pgContext, schemaName, tableName)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if indexCount+1 > expectMaxIndexNumber {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, expectMaxIndexNumber), nil
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func getIndexCountForRule62(pgContext *PgContext, schemaName, tableName string) (int, error) {
@@ -4889,18 +4875,18 @@ func getIndexCountForRule62(pgContext *PgContext, schemaName, tableName string) 
 	return indexCount, nil
 }
 
-func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -4925,7 +4911,7 @@ func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				elt.GetConstraint().GetContype() == parser.ConstrType_CONSTR_PRIMARY) {
 				keys := elt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					indexColumnsMap[key.GetString_().GetSval()] = key.GetString_().GetSval()
+					indexColumnsMap[key.GetString_().GetStr()] = key.GetString_().GetStr()
 				}
 			}
 		}
@@ -4933,7 +4919,7 @@ func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		for key := range indexColumnsMap {
 			_, ok := notNullColumnsMap[key]
 			if !ok {
-				return RuleHandlerMap[rule.Name].Message, nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 			}
 		}
 	case *parser.Node_AlterTableStmt:
@@ -4954,7 +4940,7 @@ func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					cmdNode.AlterTableCmd.GetDef().GetConstraint().GetContype() == parser.ConstrType_CONSTR_PRIMARY {
 					keys := cmdNode.AlterTableCmd.GetDef().GetConstraint().GetKeys()
 					for _, key := range keys {
-						indexColumnsMap[key.GetString_().GetSval()] = key.GetString_().GetSval()
+						indexColumnsMap[key.GetString_().GetStr()] = key.GetString_().GetStr()
 					}
 				}
 			}
@@ -4979,15 +4965,15 @@ func rule63(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func validateNotNullIndexForRule63(indexColumnsMap map[string]string, pgContext *PgContext, schemaName string,
-	tableName string, rule *driverV2.Rule) (string, bool) {
+	tableName string, rule *driverV2.Rule) (i18nPkg.I18nStr, bool) {
 	if len(indexColumnsMap) > 0 {
 		isExist, err := pgContext.IsExistTable(schemaName, tableName)
 		if err != nil {
-			return "", false
+			return nil, false
 		}
 		if isExist {
 			schemaInfo, ok := pgContext.DatabaseInfo.SchemaInfoMap[schemaName]
@@ -5001,7 +4987,7 @@ func validateNotNullIndexForRule63(indexColumnsMap map[string]string, pgContext 
 					}
 				}
 				if currentTableInfo == nil {
-					return "", true
+					return nil, true
 				}
 				columnInfoList := currentTableInfo.ColumnInfoList
 				for columnName := range indexColumnsMap {
@@ -5013,27 +4999,27 @@ func validateNotNullIndexForRule63(indexColumnsMap map[string]string, pgContext 
 						}
 					}
 					if !isExistNotNullColumn {
-						return RuleHandlerMap[rule.Name].Message, true
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), true
 					}
 				}
 			}
 		}
 	}
-	return "", false
+	return nil, false
 }
 
-func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -5060,11 +5046,11 @@ func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				elt.GetConstraint().GetContype() == parser.ConstrType_CONSTR_PRIMARY) {
 				keys := elt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					count, ok := indexColumnsMap[key.GetString_().GetSval()]
+					count, ok := indexColumnsMap[key.GetString_().GetStr()]
 					if ok {
-						indexColumnsMap[key.GetString_().GetSval()] = count + 1
+						indexColumnsMap[key.GetString_().GetStr()] = count + 1
 					} else {
-						indexColumnsMap[key.GetString_().GetSval()] = 1
+						indexColumnsMap[key.GetString_().GetStr()] = 1
 					}
 				}
 			}
@@ -5072,7 +5058,7 @@ func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 
 		for _, val := range indexColumnsMap {
 			if val > maxIndexCount {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
 			}
 		}
 	case *parser.Node_AlterTableStmt:
@@ -5093,11 +5079,11 @@ func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					cmdNode.AlterTableCmd.GetDef().GetConstraint().GetContype() == parser.ConstrType_CONSTR_PRIMARY {
 					keys := cmdNode.AlterTableCmd.GetDef().GetConstraint().GetKeys()
 					for _, key := range keys {
-						count, ok := indexColumnsMap[key.GetString_().GetSval()]
+						count, ok := indexColumnsMap[key.GetString_().GetStr()]
 						if ok {
-							indexColumnsMap[key.GetString_().GetSval()] = count + 1
+							indexColumnsMap[key.GetString_().GetStr()] = count + 1
 						} else {
-							indexColumnsMap[key.GetString_().GetSval()] = 1
+							indexColumnsMap[key.GetString_().GetStr()] = 1
 						}
 					}
 				}
@@ -5105,11 +5091,11 @@ func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		columnIndexCountMap, err := getCountInIndexForRule64(indexColumnsMap, pgContext, schemaName, tableName)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		for _, columnInIndexCount := range columnIndexCountMap {
 			if columnInIndexCount > maxIndexCount {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
 			}
 		}
 	case *parser.Node_IndexStmt:
@@ -5129,16 +5115,16 @@ func rule64(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		columnIndexCountMap, err := getCountInIndexForRule64(indexColumnsMap, pgContext, schemaName, tableName)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		for _, columnInIndexCount := range columnIndexCountMap {
 			if columnInIndexCount > maxIndexCount {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, maxIndexCount), nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func getCountInIndexForRule64(columnsMap map[string]int, pgCtx *PgContext, schema, tableName string) (map[string]int, error) {
@@ -5178,13 +5164,13 @@ func getCountInIndexForRule64(columnsMap map[string]int, pgCtx *PgContext, schem
 	return result, nil
 }
 
-func rule65(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule65(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -5208,7 +5194,7 @@ func rule65(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -5218,21 +5204,21 @@ func rule65(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			continue
 		}
 		if subQuery.LimitCount != nil && subQuery.GetLimitOffset() != nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (string, error) {
+func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 
 	// 对象名大小写混合的校验
 	result, err := parser.Scan(sql)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	tokens := result.GetTokens()
@@ -5267,7 +5253,7 @@ func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 		}
 	}
 	if sqlType != "create" && sqlType != "alter" && sqlType != "replace" {
-		return "", nil
+		return nil, nil
 	}
 
 	replaceObjectName := ""
@@ -5296,7 +5282,7 @@ func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 				if token.Start > -1 && token.End > -1 {
 					objectName := sql[token.Start:token.End]
 					if isMixedCase(objectName) {
-						return RuleHandlerMap[rule.Name].Message, nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 					}
 				}
 			}
@@ -5305,7 +5291,7 @@ func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 					if token.Start > -1 && token.End > -1 {
 						objectName := sql[token.Start:token.End]
 						if isMixedCase(objectName) {
-							return RuleHandlerMap[rule.Name].Message, nil
+							return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 						}
 					}
 				}
@@ -5337,7 +5323,7 @@ func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 
 	// 不是create or replace直接返回
 	if len(replaceObjectName) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	// 校验create or replace view/function/procedure
@@ -5346,7 +5332,7 @@ func rule66(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []stri
 		return s, err
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func getObjectNameForRule66(sqlType string, objectTypeForReplace string, token *parser.ScanToken, sql string) (bool, string) {
@@ -5366,15 +5352,15 @@ func getObjectNameForRule66(sqlType string, objectTypeForReplace string, token *
 	return true, objectName
 }
 
-func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, sql string, objectTypeForReplace, objectName string, parameters []string) (string, error, bool) {
+func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, sql string, objectTypeForReplace, objectName string, parameters []string) (i18nPkg.I18nStr, error, bool) {
 	node, err := parser.Parse(sql)
 	if err != nil {
-		return "", err, true
+		return nil, err, true
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err, true
+		return nil, err, true
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -5385,19 +5371,19 @@ func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, 
 	case *parser.Node_CreateFunctionStmt:
 		// create function/procedure xxx 不是create or replace function/procedure xxx
 		if !stmt.CreateFunctionStmt.Replace && isMixedCase(objectName) {
-			return RuleHandlerMap[rule.Name].Message, nil, true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 		}
 		funcName := stmt.CreateFunctionStmt.Funcname
 		parameters := stmt.CreateFunctionStmt.Parameters
 		if len(funcName) == 2 {
-			schemaName = funcName[0].GetString_().GetSval()
+			schemaName = funcName[0].GetString_().GetStr()
 		}
 		for _, parameter := range parameters {
 			var parameterType = ""
 			if len(parameter.GetFunctionParameter().GetArgType().GetNames()) == 2 {
-				parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetSval()
+				parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[1].GetString_().GetStr()
 			} else {
-				parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetSval()
+				parameterType = parameter.GetFunctionParameter().GetArgType().GetNames()[0].GetString_().GetStr()
 			}
 			if strings.HasPrefix(parameterType, "int") {
 				parameterType = "integer"
@@ -5425,7 +5411,7 @@ func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, 
 	case "VIEW":
 		views, err := pgContext.GetViewListForSchema(schemaName)
 		if err != nil {
-			return "", err, true
+			return nil, err, true
 		}
 		viewName := objectName
 		if strings.Contains(viewName, ".") {
@@ -5440,7 +5426,7 @@ func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, 
 			}
 		}
 		if !isExistView && isMixedCase(objectName) {
-			return RuleHandlerMap[rule.Name].Message, nil, true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 		}
 	case "FUNCTION":
 		functionName := objectName
@@ -5452,25 +5438,25 @@ func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, 
 		if len(parameterTypes) == 0 {
 			result, err := pgContext.ValidateFunctionExistInDb(pgContext.CurrentDatabase, schemaName, functionName)
 			if err != nil {
-				return "", err, true
+				return nil, err, true
 			}
 			if !result && isMixedCase(objectName) {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		} else {
-			isMatchParameterType, s, err := validateHasParameterFunctionForRule66(pgContext, schemaName, functionName, parameterTypes)
+			isMatchParameterType, _, err := validateHasParameterFunctionForRule66(pgContext, schemaName, functionName, parameterTypes)
 			if err != nil {
-				return s, err, true
+				return nil, err, true
 			}
 			// 校验自定义函数名
 			if !isMatchParameterType && isMixedCase(objectName) {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 			// 校验参数名
 			if !isMatchParameterType {
 				for _, parameter := range parameters {
 					if isMixedCase(parameter) {
-						return RuleHandlerMap[rule.Name].Message, nil, true
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 					}
 				}
 			}
@@ -5485,31 +5471,31 @@ func validateCreateOrReplaceForRule66(ctx context.Context, rule *driverV2.Rule, 
 		if len(parameterTypes) == 0 {
 			result, err := pgContext.ValidateProcedureExistInDb(pgContext.CurrentDatabase, schemaName, procedureName)
 			if err != nil {
-				return "", err, true
+				return nil, err, true
 			}
 			if !result && isMixedCase(objectName) {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		} else {
-			isMatchParameterTypeAndMode, s, err := validateHasParameterProcedureForRule66(pgContext, schemaName, procedureName, parameterTypes, parameterModes)
+			isMatchParameterTypeAndMode, _, err := validateHasParameterProcedureForRule66(pgContext, schemaName, procedureName, parameterTypes, parameterModes)
 			if err != nil {
-				return s, err, true
+				return nil, err, true
 			}
 			// 校验存储过程名
 			if !isMatchParameterTypeAndMode && isMixedCase(objectName) {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 			// 校验参数名
 			if !isMatchParameterTypeAndMode {
 				for _, parameter := range parameters {
 					if isMixedCase(parameter) {
-						return RuleHandlerMap[rule.Name].Message, nil, true
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 					}
 				}
 			}
 		}
 	}
-	return "", nil, false
+	return nil, nil, false
 }
 
 func validateHasParameterFunctionForRule66(pgContext *PgContext, schemaName string, functionName string, parameterTypes []string) (bool, string, error) {
@@ -5623,18 +5609,18 @@ func setReplaceObjectTypeForRule66(token *parser.ScanToken) string {
 	return objectTypeForReplace
 }
 
-func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -5646,7 +5632,7 @@ func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if elt.GetConstraint() != nil && elt.GetConstraint().GetContype() == parser.ConstrType_CONSTR_UNIQUE {
 				constraintName := elt.GetConstraint().GetConname()
 				if !strings.HasPrefix(strings.ToLower(constraintName), strings.ToLower(expectFixedPrefix)) {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 				}
 			}
 		}
@@ -5662,7 +5648,7 @@ func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					cmdNode.AlterTableCmd.GetDef().GetConstraint().GetContype() == parser.ConstrType_CONSTR_UNIQUE {
 					constraintName := cmdNode.AlterTableCmd.GetDef().GetConstraint().GetConname()
 					if !strings.HasPrefix(strings.ToLower(constraintName), strings.ToLower(expectFixedPrefix)) {
-						return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 					}
 				}
 			}
@@ -5671,7 +5657,7 @@ func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if stmt.IndexStmt.Unique {
 			idxName := stmt.IndexStmt.Idxname
 			if !strings.HasPrefix(strings.ToLower(idxName), strings.ToLower(expectFixedPrefix)) {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 			}
 		}
 	case *parser.Node_RenameStmt:
@@ -5694,7 +5680,7 @@ func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 							continue
 						}
 						if !strings.HasPrefix(strings.ToLower(stmt.RenameStmt.Newname), strings.ToLower(expectFixedPrefix)) {
-							return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+							return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 						}
 					}
 				}
@@ -5703,27 +5689,27 @@ func rule67(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				// 校验数据库中唯一索引前缀
 				def, err := pgContext.GetIndexDef(schemaName, relIndexName)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				if strings.HasPrefix(def, "CREATE UNIQUE INDEX") {
 					if !strings.HasPrefix(strings.ToLower(stmt.RenameStmt.Newname), strings.ToLower(expectFixedPrefix)) {
-						return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message, expectFixedPrefix), nil
 					}
 				}
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule68(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule68(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	maxInsertRows := rule.Params.GetParam("max_insert_rows").Int()
@@ -5731,24 +5717,24 @@ func rule68(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_InsertStmt:
 		selectStmt := stmt.InsertStmt.GetSelectStmt()
 		if selectStmt.GetSelectStmt() == nil {
-			return "", nil
+			return nil, nil
 		}
 		// audit sql:insert into test.test(id,name) values (1,'aa'),(2,'bb');
 		if len(selectStmt.GetSelectStmt().GetValuesLists()) > maxInsertRows {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxInsertRows), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxInsertRows), nil
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
-func rule69(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (string, error) {
+func rule69(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []string) (i18nPkg.I18nStr, error) {
 	nodes, err := pkgParser.ParseSQL(rawSql)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(nodes) <= 0 {
-		return "", fmt.Errorf("can not find parse tree from SQL")
+		return nil, fmt.Errorf("can not find parse tree from SQL")
 	}
 
 	// filter out IURD
@@ -5758,29 +5744,29 @@ func rule69(ctx context.Context, rule *driverV2.Rule, rawSql string, nextSQL []s
 	case *parser.Node_InsertStmt:
 	case *parser.Node_UpdateStmt:
 	default:
-		return "", nil
+		return nil, nil
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if pgContext.UsingType == UsingTypeOffline {
-		return "", nil
+		return nil, nil
 	}
 	e := pgContext.Executor
 
 	jsonQueryPlans, err := getExplainResult(pgContext, rawSql, e)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if _, err = checkFullIndexScanForRule69(jsonQueryPlans); err != nil {
-		return RuleHandlerMap[rule.Name].Message, nil
+		return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func checkFullIndexScanForRule69(jsonQueryPlans *[]PlanType) (bool, error) {
@@ -5816,13 +5802,13 @@ func checkPlanForFullIndexScanForRule69(plan PlanType) (bool, error) {
 	return false, nil
 }
 
-func rule70(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule70(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	maxInParametersNumber := rule.Params.GetParam("max_in_parameters_number").Int()
@@ -5861,7 +5847,7 @@ func rule70(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -5873,31 +5859,31 @@ func rule70(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			return message, nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func validateInParametersNumberForRule70(whereClause *parser.Node, maxInParametersNumber int,
-	rule *driverV2.Rule) (string, bool) {
+	rule *driverV2.Rule) (i18nPkg.I18nStr, bool) {
 	if whereClause != nil && whereClause.GetAExpr() != nil &&
 		whereClause.GetAExpr().GetKind() == parser.A_Expr_Kind_AEXPR_IN {
 		lList, rList := whereClause.GetAExpr().GetLexpr().GetList(), whereClause.GetAExpr().GetRexpr().GetList()
 		if lList != nil && len(lList.GetItems()) > maxInParametersNumber {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxInParametersNumber), true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxInParametersNumber), true
 		}
 		if rList != nil && len(rList.GetItems()) > maxInParametersNumber {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxInParametersNumber), true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxInParametersNumber), true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
-func rule71(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule71(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -5921,7 +5907,7 @@ func rule71(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -5931,26 +5917,26 @@ func rule71(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			continue
 		}
 		if subQuery.GetOp() == parser.SetOperation_SETOP_UNION && !subQuery.GetAll() {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		lArg, rArg := subQuery.Larg, subQuery.Rarg
 		if lArg != nil && lArg.GetOp() == parser.SetOperation_SETOP_UNION && !lArg.GetAll() {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		if rArg != nil && rArg.GetOp() == parser.SetOperation_SETOP_UNION && !rArg.GetAll() {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	specifiedFunctionsSet := rule.Params.GetParam("specified_functions_set").String()
@@ -5970,7 +5956,7 @@ func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		targetList := stmt.UpdateStmt.TargetList
 		for _, list := range targetList {
 			if validateFunctionForRule72(list.GetResTarget().GetVal().GetFuncCall(), specifiedFunctionsSet) {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 			}
 			subQueries = append(subQueries, *utils.ExtractSubQueries(list)...)
 		}
@@ -5978,7 +5964,7 @@ func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -5989,7 +5975,7 @@ func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			if target.GetResTarget() != nil && target.GetResTarget().GetVal() != nil {
 				funcCall := target.GetResTarget().GetVal().GetFuncCall()
 				if validateFunctionForRule72(funcCall, specifiedFunctionsSet) {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 				}
 			}
 		}
@@ -6000,12 +5986,12 @@ func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				lExpr, rExpr := aExpr.GetLexpr(), aExpr.GetRexpr()
 				if lExpr != nil {
 					if validateFunctionForRule72(lExpr.GetFuncCall(), specifiedFunctionsSet) {
-						return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 					}
 				}
 				if rExpr != nil {
 					if validateFunctionForRule72(rExpr.GetFuncCall(), specifiedFunctionsSet) {
-						return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+						return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 					}
 				}
 			}
@@ -6015,23 +6001,23 @@ func rule72(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			lExpr, rExpr := havingClause.GetAExpr().GetLexpr(), havingClause.GetAExpr().GetRexpr()
 			if lExpr != nil {
 				if validateFunctionForRule72(lExpr.GetFuncCall(), specifiedFunctionsSet) {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 				}
 			}
 			if rExpr != nil {
 				if validateFunctionForRule72(rExpr.GetFuncCall(), specifiedFunctionsSet) {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 				}
 			}
 		}
 		sortClauses := subQuery.SortClause
 		for _, sortClause := range sortClauses {
 			if validateFunctionForRule72(sortClause.GetSortBy().GetNode().GetFuncCall(), specifiedFunctionsSet) {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, specifiedFunctionsSet), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func validateFunctionForRule72(funcCall *parser.FuncCall, specifiedFunctionsSet string) bool {
@@ -6041,7 +6027,7 @@ func validateFunctionForRule72(funcCall *parser.FuncCall, specifiedFunctionsSet 
 	specifiedFunctions := strings.Split(specifiedFunctionsSet, ",")
 	funcNames := funcCall.GetFuncname()
 	for _, funcName := range funcNames {
-		functionName := funcName.GetString_().GetSval()
+		functionName := funcName.GetString_().GetStr()
 		for _, specifiedFunction := range specifiedFunctions {
 			if strings.ToLower(functionName) == strings.ToLower(specifiedFunction) {
 				return true
@@ -6071,7 +6057,7 @@ func getFunctionsFromArgsForRule72(args []*parser.Node) []string {
 	for _, arg := range args {
 		funcNames := arg.GetFuncCall().GetFuncname()
 		for _, funcName := range funcNames {
-			functions = append(functions, funcName.GetString_().GetSval())
+			functions = append(functions, funcName.GetString_().GetStr())
 			if funcName.GetFuncCall() != nil && len(funcName.GetFuncCall().GetArgs()) > 0 {
 				functions = append(functions, getFunctionsFromArgsForRule72(funcName.GetFuncCall().GetArgs())...)
 			}
@@ -6080,13 +6066,13 @@ func getFunctionsFromArgsForRule72(args []*parser.Node) []string {
 	return functions
 }
 
-func rule73(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule73(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	maxJoinNumber := rule.Params.GetParam("max_join_number").Int()
@@ -6111,7 +6097,7 @@ func rule73(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -6128,11 +6114,11 @@ func rule73(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				joinCount++
 			}
 			if joinCount > maxJoinNumber {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxJoinNumber), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, maxJoinNumber), nil
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func getJoinCountForRule73(joinExpr *parser.JoinExpr) int {
@@ -6154,18 +6140,18 @@ func getJoinCountForRule73(joinExpr *parser.JoinExpr) int {
 	return joinCount
 }
 
-func rule74(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule74(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
@@ -6192,7 +6178,7 @@ func rule74(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -6221,11 +6207,11 @@ func rule74(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func validateSingleSqlForRule74(subQuery *parser.SelectStmt, tableAliasMap map[string]string, tableMap map[string]map[string]string, currentSchemaName string, pgContext *PgContext,
-	expectLongFieldLength int, rule *driverV2.Rule) (string, error, bool) {
+	expectLongFieldLength int, rule *driverV2.Rule) (i18nPkg.I18nStr, error, bool) {
 	fromClause := subQuery.FromClause
 	for _, from := range fromClause {
 		tableAliasMap, tableMap = setTableLongColumnMapForRule74(from, currentSchemaName, pgContext, expectLongFieldLength)
@@ -6244,13 +6230,13 @@ func validateSingleSqlForRule74(subQuery *parser.SelectStmt, tableAliasMap map[s
 				for _, arg := range args {
 					fields := arg.GetColumnRef().GetFields()
 					if validateColumnLengthForRule74(fields, tableAliasMap, tableMap) {
-						return RuleHandlerMap[rule.Name].Message, nil, true
+						return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 					}
 				}
 			}
 			fields := columnRef.GetFields()
 			if validateColumnLengthForRule74(fields, tableAliasMap, tableMap) {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		}
 	}
@@ -6259,7 +6245,7 @@ func validateSingleSqlForRule74(subQuery *parser.SelectStmt, tableAliasMap map[s
 	for _, group := range groupClause {
 		fields := group.GetColumnRef().GetFields()
 		if validateColumnLengthForRule74(fields, tableAliasMap, tableMap) {
-			return RuleHandlerMap[rule.Name].Message, nil, true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 		}
 	}
 	// 处理order by
@@ -6267,10 +6253,10 @@ func validateSingleSqlForRule74(subQuery *parser.SelectStmt, tableAliasMap map[s
 	for _, sort := range sortClause {
 		fields := sort.GetSortBy().GetNode().GetColumnRef().GetFields()
 		if validateColumnLengthForRule74(fields, tableAliasMap, tableMap) {
-			return RuleHandlerMap[rule.Name].Message, nil, true
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 		}
 	}
-	return "", nil, false
+	return nil, nil, false
 }
 
 func setTableLongColumnMapForRule74(from *parser.Node, currentSchemaName string, pgContext *PgContext, expectLongFieldLength int) (tableAliasMap map[string]string, tableMap map[string]map[string]string) {
@@ -6327,8 +6313,8 @@ func validateColumnLengthForRule74(fields []*parser.Node, tableAliasMap map[stri
 		return false
 	}
 	if len(fields) == 2 {
-		tableAlias = fields[0].GetString_().GetSval()
-		columnName = fields[1].GetString_().GetSval()
+		tableAlias = fields[0].GetString_().GetStr()
+		columnName = fields[1].GetString_().GetStr()
 		tableName, ok := tableAliasMap[tableAlias]
 		if ok {
 			columnsMap, ok := tableMap[tableName]
@@ -6340,7 +6326,7 @@ func validateColumnLengthForRule74(fields []*parser.Node, tableAliasMap map[stri
 			}
 		}
 	} else {
-		columnName = fields[0].GetString_().GetSval()
+		columnName = fields[0].GetString_().GetStr()
 		for _, columnsValue := range tableMap {
 			for key := range columnsValue {
 				if key == columnName {
@@ -6352,13 +6338,13 @@ func validateColumnLengthForRule74(fields []*parser.Node, tableAliasMap map[stri
 	return false
 }
 
-func rule75(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule75(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	maxLimitRows := rule.Params.GetParam("max_rows").Int()
@@ -6370,7 +6356,7 @@ func rule75(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		// 过滤sql：insert into test.test(id,name,age) values(1,'aa',100);
 		if stmt.InsertStmt.SelectStmt.GetSelectStmt() != nil &&
 			len(stmt.InsertStmt.SelectStmt.GetSelectStmt().GetValuesLists()) > 0 {
-			return "", nil
+			return nil, nil
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.InsertStmt.SelectStmt)...)
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.InsertStmt.GetWithClause())...)
@@ -6393,23 +6379,23 @@ func rule75(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	for _, subQuery := range subQueries {
 		limitCount := subQuery.LimitCount
 		if limitCount == nil {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxLimitRows), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxLimitRows), nil
 		}
-		iVal := limitCount.GetAConst().GetIval().GetIval()
+		iVal := limitCount.GetAConst().GetVal().GetInteger().GetIval()
 		if int(iVal) > maxLimitRows {
-			return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, maxLimitRows), nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message, maxLimitRows), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule76(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule76(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -6433,7 +6419,7 @@ func rule76(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -6451,19 +6437,19 @@ func rule76(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 			}
 		}
 		if len(sortTypeMap) > 1 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
-func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	selectColumnTargetList := make([]*parser.Node, 0)
@@ -6486,7 +6472,7 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				selectStmt := target.GetResTarget().GetVal().GetSubLink().GetSubselect().GetSelectStmt()
 				count += computeSubQueryCountForRule77(selectStmt)
 				if count > expectedSubQueryNestingLayers {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 				}
 			}
 		}
@@ -6494,7 +6480,7 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if whereClause != nil {
 			result := validateWhereSubQueryForRule77(whereClause, expectedSubQueryNestingLayers)
 			if result {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(node.GetStmt())...)
@@ -6506,7 +6492,7 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if whereClause != nil {
 			result := validateWhereSubQueryForRule77(whereClause, expectedSubQueryNestingLayers)
 			if result {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 			}
 		}
 		fromClause := stmt.UpdateStmt.FromClause
@@ -6524,12 +6510,12 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if whereClause != nil {
 			result := validateWhereSubQueryForRule77(whereClause, expectedSubQueryNestingLayers)
 			if result {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 			}
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -6560,7 +6546,7 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				}
 				count += computeSubQueryCountForRule77(selectStmt)
 				if count > expectedSubQueryNestingLayers {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 				}
 			}
 		}
@@ -6572,7 +6558,7 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 				var count = 1
 				count += computeSubQueryCountForRule77(from.GetRangeSubselect().GetSubquery().GetSelectStmt())
 				if count > expectedSubQueryNestingLayers {
-					return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+					return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 				}
 			}
 		}
@@ -6580,12 +6566,12 @@ func rule77(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		if whereClause != nil {
 			result := validateWhereSubQueryForRule77(whereClause, expectedSubQueryNestingLayers)
 			if result {
-				return fmt.Sprintf(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
+				return localizeMessage(RuleHandlerMap[rule.Name].Message, expectedSubQueryNestingLayers), nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func validateWhereSubQueryForRule77(whereClause *parser.Node, expectedSubQueryLayers int) bool {
@@ -6629,18 +6615,18 @@ func computeSubQueryCountForRule77(selectStmt *parser.SelectStmt) int {
 	return count
 }
 
-func rule78(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule78(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	pgContext, err := getPgContextFromCtx(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
 
@@ -6675,7 +6661,7 @@ func rule78(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
@@ -6716,7 +6702,7 @@ func rule78(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 					for _, clause := range clauses {
 						tableMap, _, err := setTableMapForRule59(clause.GetRangeVar(), currentSchemaName, pgContext)
 						if err != nil {
-							return "", err
+							return nil, err
 						}
 						for tableName := range tableMap {
 							tableNames = append(tableNames, tableName)
@@ -6753,7 +6739,7 @@ func rule78(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 func getColumnTypeForRule78(fields []*parser.Node, tableAliasMap map[string]string,
@@ -6761,14 +6747,14 @@ func getColumnTypeForRule78(fields []*parser.Node, tableAliasMap map[string]stri
 	columnType := ""
 	// fields长度为2,是有表别名；长度为1,是没有表别名
 	if len(fields) == 2 {
-		tableAliasName := fields[0].GetString_().GetSval()
+		tableAliasName := fields[0].GetString_().GetStr()
 		tableNames, ok := tableAliasMap[tableAliasName]
 		if ok {
 			tableNameArray := strings.Split(tableNames, ",")
 			for _, tableName := range tableNameArray {
 				columnMap, ok := tableNameMap[tableName]
 				if ok {
-					columnTypeDb, ok := columnMap[fields[1].GetString_().GetSval()]
+					columnTypeDb, ok := columnMap[fields[1].GetString_().GetStr()]
 					if ok {
 						columnType = columnTypeDb
 					}
@@ -6776,7 +6762,7 @@ func getColumnTypeForRule78(fields []*parser.Node, tableAliasMap map[string]stri
 			}
 		}
 	} else if len(fields) == 1 {
-		columnName := fields[0].GetString_().GetSval()
+		columnName := fields[0].GetString_().GetStr()
 		for _, columnMapValue := range tableNameMap {
 			for columnNameKey, columnTypeValue := range columnMapValue {
 				if columnName == columnNameKey {
@@ -6808,27 +6794,25 @@ func convertDataTypeForRule78(columnType string) string {
 	return realColumnType
 }
 
-func getValueTypeForRule78(val *parser.A_Const) string {
+func getValueTypeForRule78(val *parser.Node) string {
 	if val == nil {
 		return ""
 	}
-
 	valueType := ""
-	if val.GetIval() != nil {
+	if _, ok := val.GetNode().(*parser.Node_Integer); ok {
 		valueType = "integer"
-	} else if val.GetSval() != nil {
+	} else if _, ok := val.GetNode().(*parser.Node_String_); ok {
 		valueType = "string"
-	} else if val.GetFval() != nil {
+	} else if _, ok := val.GetNode().(*parser.Node_Float); ok {
 		valueType = "float"
 	} else {
 		valueType = ""
 	}
-
 	return valueType
 }
 
 func validateWhereColumnTypeSameForRule78(aExpr *parser.A_Expr, tableAliasMap map[string]string,
-	tableNameMap map[string]map[string]string, rule *driverV2.Rule) (string, error, bool) {
+	tableNameMap map[string]map[string]string, rule *driverV2.Rule) (i18nPkg.I18nStr, error, bool) {
 	if aExpr != nil {
 		lExpr, rExpr := aExpr.GetLexpr(), aExpr.GetRexpr()
 		lFields, rFields := make([]*parser.Node, 0), make([]*parser.Node, 0)
@@ -6848,44 +6832,44 @@ func validateWhereColumnTypeSameForRule78(aExpr *parser.A_Expr, tableAliasMap ma
 			lColumnType = getColumnTypeForRule78(lFields, tableAliasMap, tableNameMap)
 			rColumnType = getColumnTypeForRule78(rFields, tableAliasMap, tableNameMap)
 			if lColumnType != rColumnType {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		}
 		// where条件：column1 = '1'
 		if len(lFields) > 0 && rAConst != nil {
 			lColumnType = getColumnTypeForRule78(lFields, tableAliasMap, tableNameMap)
-			rValueType = getValueTypeForRule78(rAConst)
+			rValueType = getValueTypeForRule78(rAConst.GetVal())
 			if lColumnType != rValueType {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		}
 		// where条件：'1' = column2
 		if lAConst != nil && len(rFields) > 0 {
-			lValueType = getValueTypeForRule78(lAConst)
+			lValueType = getValueTypeForRule78(lAConst.GetVal())
 			rColumnType = getColumnTypeForRule78(rFields, tableAliasMap, tableNameMap)
 			if lValueType != rColumnType {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		}
 		// where条件：1 = '1'
 		if lAConst != nil && rAConst != nil {
-			lValueType = getValueTypeForRule78(lAConst)
-			rValueType = getValueTypeForRule78(rAConst)
+			lValueType = getValueTypeForRule78(lAConst.GetVal())
+			rValueType = getValueTypeForRule78(rAConst.GetVal())
 			if lValueType != rValueType {
-				return RuleHandlerMap[rule.Name].Message, nil, true
+				return localizeMessage(RuleHandlerMap[rule.Name].Message), nil, true
 			}
 		}
 	}
-	return "", nil, false
+	return nil, nil, false
 }
 
-func rule79(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error) {
+func rule79(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
 	if rule == nil {
-		return "", fmt.Errorf("rule is required")
+		return nil, fmt.Errorf("rule is required")
 	}
 	node, ok := astSQL.(*parser.RawStmt)
 	if !ok {
-		return "", fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
 	}
 
 	var subQueries []*parser.SelectStmt
@@ -6909,17 +6893,17 @@ func rule79(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQ
 	case *parser.Node_DeleteStmt:
 		subQueries = append(subQueries, *utils.ExtractSubQueries(stmt.DeleteStmt.WhereClause)...)
 		if stmt.DeleteStmt.WhereClause == nil {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 		subQueries = append(subQueries, *utils.HandleWithClause(stmt.DeleteStmt.GetWithClause())...)
 	}
 
 	for _, subQuery := range subQueries {
 		if subQuery.LimitCount != nil && len(subQuery.SortClause) == 0 {
-			return RuleHandlerMap[rule.Name].Message, nil
+			return localizeMessage(RuleHandlerMap[rule.Name].Message), nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 func setCurrentSchemaFromVariableSetStmt(ctx context.Context, stmt *parser.Node_VariableSetStmt) (currentSchemaName string, err error) {
@@ -6929,7 +6913,7 @@ func setCurrentSchemaFromVariableSetStmt(ctx context.Context, stmt *parser.Node_
 		if valNode == nil {
 			continue
 		}
-		currentSchemaName = valNode.AConst.GetSval().GetSval()
+		currentSchemaName = valNode.AConst.GetVal().GetString_().GetStr()
 		if len(currentSchemaName) == 0 {
 			continue
 		}
@@ -6994,12 +6978,12 @@ func gatherCommentOfColumnsFromOneSql(ctx context.Context, targetSchemaName, cur
 	var column *parser.Node_String_
 	if len(items) == 3 { // 显式指定schema
 		itemNamePt, ok := items[0].GetNode().(*parser.Node_String_)
-		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetSchemaName { // 匹配schema名
+		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetSchemaName { // 匹配schema名
 			return nil
 		}
 
 		itemNamePt, ok = items[1].GetNode().(*parser.Node_String_)
-		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetTableName { // 匹配表名
+		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetTableName { // 匹配表名
 			return nil
 		}
 
@@ -7010,7 +6994,7 @@ func gatherCommentOfColumnsFromOneSql(ctx context.Context, targetSchemaName, cur
 
 	} else if len(items) == 2 { // 没有显式指定schema
 		itemNamePt, ok := items[0].GetNode().(*parser.Node_String_)
-		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.GetSval() != targetTableName { // 匹配表名
+		if !ok || itemNamePt == nil || itemNamePt.String_ == nil || itemNamePt.String_.Str != targetTableName { // 匹配表名
 			return nil
 		}
 
@@ -7043,7 +7027,7 @@ func gatherCommentOfColumnsFromOneSql(ctx context.Context, targetSchemaName, cur
 		return nil
 	}
 
-	columnsWithComment[column.String_.GetSval()] = struct{}{}
+	columnsWithComment[column.String_.Str] = struct{}{}
 	return nil
 }
 
@@ -7057,14 +7041,14 @@ func setCurrentSchemaToCtx(ctx context.Context, schema string) error {
 		return fmt.Errorf("cannot get executor from context")
 	}
 	// 设置上下文中当前schema
-	c.PgContext.DatabaseInfo.CurrentSchema = schema
-	if _, ok := c.PgContext.DatabaseInfo.SchemaInfoMap[schema]; !ok {
+	c.pgContext.DatabaseInfo.CurrentSchema = schema
+	if _, ok := c.pgContext.DatabaseInfo.SchemaInfoMap[schema]; !ok {
 		schemaInfo := SchemaInfo{
 			SchemaName:    schema,
 			TableInfoList: make([]*TableInfo, 0),
 			IndexInfoList: make([]*IndexInfo, 0),
 		}
-		c.PgContext.DatabaseInfo.SchemaInfoMap[schema] = &schemaInfo
+		c.pgContext.DatabaseInfo.SchemaInfoMap[schema] = &schemaInfo
 	}
 	if c.CurrentSchema == nil {
 		c.CurrentSchema = &schema
@@ -7072,4 +7056,959 @@ func setCurrentSchemaToCtx(ctx context.Context, schema string) error {
 	}
 	*c.CurrentSchema = schema
 	return nil
+}
+
+func rule80(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error) {
+	if rule == nil {
+		return nil, fmt.Errorf("rule is required")
+	}
+	node, ok := astSQL.(*parser.RawStmt)
+	if !ok {
+		return nil, fmt.Errorf("invalid type of ast of rule[%v]", rule.Name)
+	}
+
+	// 检查是否为DDL语句
+	if !isDDLStatement(node) {
+		return nil, nil
+	}
+
+	// 获取executor来执行查询
+	e, err := getExecutorFromCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取当前schema
+	pgContext, err := getPgContextFromCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	currentSchemaName := pgContext.DatabaseInfo.CurrentSchema
+
+	// 从可能造成锁冲突的DDL语句中提取表信息
+	tableInfos, err := extractTableInfoFromLockTableDDL(e, node, currentSchemaName)
+	if err != nil {
+		return nil, err
+	}
+
+	// 如果没有提取到表信息，跳过检查
+	if len(tableInfos) == 0 {
+		return nil, nil
+	}
+
+	// 检查每个表是否有锁冲突
+	for _, tableInfo := range tableInfos {
+		lockCount, err := checkTableLockConflicts(e, tableInfo.Schema, tableInfo.Table)
+		if err != nil {
+			return nil, err
+		}
+
+		if lockCount > 0 {
+			if tableInfo.Schema == "" {
+				return localizeMessage(plocale.PgRule080MessageLock, lockCount), nil
+			}
+			if tableInfo.Table == "" {
+				return localizeMessage(plocale.PgRule080MessageSchemaLock, lockCount, tableInfo.Schema), nil
+			}
+			return localizeMessage(plocale.PgRule080MessageTableLock, lockCount, tableInfo.Schema, tableInfo.Table), nil
+		}
+	}
+
+	return nil, nil
+}
+
+// checkTableLockConflicts 检查表被多少个事务加锁
+func checkTableLockConflicts(e *executor.Executor, schema, table string) (int, error) {
+	var query string
+	var args []interface{}
+
+	if schema == "" {
+		// 操作 DATABASE 情况：检查所有锁
+		query = `
+			SELECT COUNT(DISTINCT l.pid) as lock_count
+			FROM
+				pg_locks l
+		`
+	} else if table == "" {
+		// DROP SCHEMA 情况：检查该schema下所有表的锁
+		query = `
+			SELECT COUNT(DISTINCT l.pid) as lock_count
+			FROM
+				pg_locks l
+			JOIN
+				pg_class t ON l.relation = t.oid
+			JOIN
+				pg_namespace n ON t.relnamespace = n.oid
+			WHERE
+				n.nspname = $1
+		`
+		args = []interface{}{schema}
+	} else {
+		// 普通表的情况：检查指定表的锁
+		query = `
+			SELECT COUNT(DISTINCT l.pid) as lock_count
+			FROM
+				pg_locks l
+			JOIN
+				pg_class t ON l.relation = t.oid
+			JOIN
+				pg_namespace n ON t.relnamespace = n.oid
+			WHERE
+				n.nspname = $1
+				AND t.relname = $2
+		`
+		args = []interface{}{schema, table}
+	}
+
+	results, err := e.Db.Query(query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query table lock count: %v", err)
+	}
+
+	if len(results) == 0 {
+		return 0, nil
+	}
+
+	// 检查锁数量
+	lockCount := results[0]["lock_count"]
+	return strconv.Atoi(lockCount.String)
+}
+
+// isDDLStatement 检查是否为DDL语句
+func isDDLStatement(node *parser.RawStmt) bool {
+	switch node.GetStmt().GetNode().(type) {
+	// 表相关操作
+	case *parser.Node_CreateStmt,
+		*parser.Node_CreateTableAsStmt,
+		*parser.Node_AlterTableStmt,
+		*parser.Node_TruncateStmt,
+		*parser.Node_CommentStmt,
+		*parser.Node_RenameStmt:
+		return true
+
+	// 索引相关操作
+	case *parser.Node_IndexStmt,
+		*parser.Node_ReindexStmt:
+		return true
+
+	// 视图相关操作
+	case *parser.Node_ViewStmt:
+		return true
+
+	// 序列相关操作
+	case *parser.Node_CreateSeqStmt,
+		*parser.Node_AlterSeqStmt:
+		return true
+
+	// 触发器相关操作
+	case *parser.Node_CreateTrigStmt:
+		return true
+
+	// 函数/存储过程相关操作
+	case *parser.Node_CreateFunctionStmt,
+		*parser.Node_AlterFunctionStmt:
+		return true
+
+	// Schema相关操作
+	case *parser.Node_CreateSchemaStmt:
+		return true
+
+	// 数据库相关操作
+	case *parser.Node_CreatedbStmt,
+		*parser.Node_DropdbStmt,
+		*parser.Node_AlterDatabaseStmt:
+		return true
+
+	// 角色相关操作
+	case *parser.Node_CreateRoleStmt,
+		*parser.Node_DropRoleStmt,
+		*parser.Node_AlterRoleStmt:
+		return true
+
+	// 表空间相关操作
+	case *parser.Node_CreateTableSpaceStmt,
+		*parser.Node_DropTableSpaceStmt:
+		return true
+
+	// 通用DROP操作
+	case *parser.Node_DropStmt:
+		return true
+
+	// 维护操作
+	case *parser.Node_VacuumStmt,
+		*parser.Node_ClusterStmt,
+		*parser.Node_RefreshMatViewStmt:
+		return true
+
+	// 其他可能的操作
+	case *parser.Node_CreateAmStmt:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// DDLTableInfo DDL表信息结构体
+type DDLTableInfo struct {
+	Schema string
+	Table  string
+}
+
+func (d DDLTableInfo) String() string {
+	if d.Schema == "" {
+		return d.Table
+	}
+	if d.Table == "" {
+		return d.Schema
+	}
+	return fmt.Sprintf("%s.%s", d.Schema, d.Table)
+}
+
+// extractTableInfoFromLockTableDDL 从可能锁表的DDL语句中提取表信息
+func extractTableInfoFromLockTableDDL(e *executor.Executor, node *parser.RawStmt, currentSchema string) ([]DDLTableInfo, error) {
+	var tableInfos []DDLTableInfo
+
+	switch stmt := node.GetStmt().GetNode().(type) {
+	// 表相关操作
+	case *parser.Node_CreateStmt:
+		// CREATE TABLE 无需检查
+
+	case *parser.Node_CreateTableAsStmt:
+		// CREATE TABLE AS / CREATE MATERIALIZED VIEW AS
+		relKind := stmt.CreateTableAsStmt.GetRelkind()
+		if relKind == parser.ObjectType_OBJECT_MATVIEW {
+			// CREATE MATERIALIZED VIEW AS - 创建物化视图
+			if stmt.CreateTableAsStmt.GetInto() != nil && stmt.CreateTableAsStmt.GetInto().GetRel() != nil {
+				schema := stmt.CreateTableAsStmt.GetInto().GetRel().GetSchemaname()
+				relName := stmt.CreateTableAsStmt.GetInto().GetRel().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(relName) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	case *parser.Node_AlterTableStmt:
+		// ALTER TABLE
+		schema := stmt.AlterTableStmt.GetRelation().GetSchemaname()
+		table := stmt.AlterTableStmt.GetRelation().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(table) > 0 {
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+		}
+
+	case *parser.Node_IndexStmt:
+		// CREATE INDEX
+		schema := stmt.IndexStmt.GetRelation().GetSchemaname()
+		table := stmt.IndexStmt.GetRelation().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(table) > 0 {
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+		}
+
+	case *parser.Node_DropStmt:
+		// 处理所有 DROP 语句类型
+		removeType := stmt.DropStmt.GetRemoveType()
+		dropTableInfos, err := extractTableInfoFromDropStmt(e, stmt.DropStmt, removeType, currentSchema)
+		if err != nil {
+			return nil, err
+		}
+		tableInfos = append(tableInfos, dropTableInfos...)
+
+	// 视图相关操作
+	case *parser.Node_ViewStmt:
+		// CREATE VIEW - 视图本身不锁表，但可能影响依赖的表
+		schema := stmt.ViewStmt.GetView().GetSchemaname()
+		viewName := stmt.ViewStmt.GetView().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(viewName) > 0 {
+			// 视图本身不锁表，但可能影响依赖的表，至少提取schema信息
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+		}
+
+	// 序列相关操作
+	case *parser.Node_CreateSeqStmt:
+		// CREATE SEQUENCE - 序列通常不锁表，但可能影响使用该序列的表
+		schema := stmt.CreateSeqStmt.GetSequence().GetSchemaname()
+		seqName := stmt.CreateSeqStmt.GetSequence().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(seqName) > 0 {
+			// 序列创建可能影响使用该序列的表，至少提取schema信息
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+		}
+
+	case *parser.Node_AlterSeqStmt:
+		// ALTER SEQUENCE - 序列通常不锁表，但可能影响使用该序列的表
+		schema := stmt.AlterSeqStmt.GetSequence().GetSchemaname()
+		seqName := stmt.AlterSeqStmt.GetSequence().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(seqName) > 0 {
+			// 序列修改可能影响使用该序列的表，至少提取schema信息
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+		}
+
+	// 触发器相关操作
+	case *parser.Node_CreateTrigStmt:
+		// CREATE TRIGGER - 触发器会锁表
+		schema := stmt.CreateTrigStmt.GetRelation().GetSchemaname()
+		table := stmt.CreateTrigStmt.GetRelation().GetRelname()
+		if len(schema) == 0 {
+			schema = currentSchema
+		}
+		if len(table) > 0 {
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+		}
+
+	// 函数/存储过程相关操作
+	case *parser.Node_CreateFunctionStmt:
+		// CREATE FUNCTION - 函数通常不锁表，但可能影响依赖的表
+		funcnameList := stmt.CreateFunctionStmt.GetFuncname()
+		if len(funcnameList) > 0 {
+			var schema, funcName string
+			if len(funcnameList) >= 2 {
+				schema = funcnameList[0].GetString_().GetStr()
+				funcName = funcnameList[1].GetString_().GetStr()
+			} else {
+				schema = currentSchema
+				funcName = funcnameList[0].GetString_().GetStr()
+			}
+			if len(schema) == 0 {
+				schema = currentSchema
+			}
+			if len(funcName) > 0 {
+				// 函数创建可能影响依赖的表，至少提取schema信息
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+			}
+		}
+
+	// Schema相关操作
+	case *parser.Node_CreateSchemaStmt:
+		// CREATE SCHEMA
+
+	// 数据库相关操作
+	case *parser.Node_CreatedbStmt:
+		// CREATE DATABASE - 数据库创建通常不锁表
+	case *parser.Node_DropdbStmt, *parser.Node_AlterDatabaseStmt:
+		tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+
+	// 角色相关操作
+	case *parser.Node_CreateRoleStmt:
+		// CREATE ROLE - 角色创建通常不锁表
+	case *parser.Node_DropRoleStmt:
+		// DROP ROLE - 角色删除通常不锁表
+	case *parser.Node_AlterRoleStmt:
+		// ALTER ROLE - 角色修改通常不锁表
+
+	// 表空间相关操作
+	case *parser.Node_CreateTableSpaceStmt:
+		// CREATE TABLESPACE - 表空间创建通常不锁表
+	case *parser.Node_DropTableSpaceStmt:
+		// DROP TABLESPACE
+		tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+
+	// 其他可能影响锁的操作
+	case *parser.Node_CreateAmStmt:
+		// CREATE ACCESS METHOD - 访问方法创建通常不锁表
+
+	case *parser.Node_TruncateStmt:
+		// TRUNCATE TABLE
+		for _, relation := range stmt.TruncateStmt.GetRelations() {
+			if relation.GetRangeVar() != nil {
+				schema := relation.GetRangeVar().GetSchemaname()
+				table := relation.GetRangeVar().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+		}
+
+	case *parser.Node_RenameStmt:
+		// RENAME 各种对象类型
+		renameType := stmt.RenameStmt.GetRenameType()
+		switch renameType {
+		case parser.ObjectType_OBJECT_TABLE:
+			// RENAME TABLE - 重命名表
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		case parser.ObjectType_OBJECT_COLUMN:
+			// RENAME COLUMN - 重命名列
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		case parser.ObjectType_OBJECT_INDEX:
+			// RENAME INDEX - 重命名索引
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				indexName := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(indexName) > 0 {
+					// 通过索引名查询对应的表名
+					tableName, err := getTableNameByIndexName(e, schema, indexName)
+					if err != nil {
+						// 无法查询到具体表名时，至少提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					} else if len(tableName) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: tableName})
+					} else {
+						// 查询成功但没有表名，提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					}
+				}
+			}
+
+		case parser.ObjectType_OBJECT_SEQUENCE:
+			// RENAME SEQUENCE - 重命名序列
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+			}
+
+		case parser.ObjectType_OBJECT_VIEW:
+			// RENAME VIEW - 重命名视图
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+			}
+
+		case parser.ObjectType_OBJECT_MATVIEW:
+			// RENAME MATERIALIZED VIEW - 重命名物化视图
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		case parser.ObjectType_OBJECT_FUNCTION:
+			// RENAME FUNCTION - 重命名函数
+			if stmt.RenameStmt.GetObject() != nil && stmt.RenameStmt.GetObject().GetObjectWithArgs() != nil {
+				// 从 object 字段中提取函数信息
+				obj := stmt.RenameStmt.GetObject().GetObjectWithArgs()
+				if len(obj.GetObjname()) == 1 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: currentSchema, Table: ""})
+				}
+				if len(obj.GetObjname()) == 2 {
+					schema := obj.GetObjname()[0].GetString_().GetStr()
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+
+			}
+
+		case parser.ObjectType_OBJECT_TRIGGER:
+			// RENAME TRIGGER - 重命名触发器
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				triggerName := stmt.RenameStmt.GetSubname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(triggerName) > 0 {
+					// 通过触发器名查询对应的表名
+					tableName, err := getTableNameByTriggerName(e, schema, triggerName)
+					if err != nil {
+						// 无法查询到具体表名时，至少提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					} else if len(tableName) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: tableName})
+					} else {
+						// 查询成功但没有表名，提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					}
+				}
+			}
+
+		case parser.ObjectType_OBJECT_TABCONSTRAINT:
+			// RENAME CONSTRAINT - 重命名约束
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		case parser.ObjectType_OBJECT_POLICY:
+			// RENAME POLICY - 重命名策略
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		default:
+			// 其他重命名类型，尝试从 relation 字段获取信息
+			if stmt.RenameStmt.GetRelation() != nil {
+				schema := stmt.RenameStmt.GetRelation().GetSchemaname()
+				table := stmt.RenameStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	case *parser.Node_CommentStmt:
+		// COMMENT ON TABLE
+		if stmt.CommentStmt.GetObjtype() == parser.ObjectType_OBJECT_TABLE {
+			object := stmt.CommentStmt.GetObject()
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				if len(items) == 1 {
+					table := items[0].GetString_().GetStr()
+					if len(table) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: currentSchema, Table: table})
+					}
+				} else if len(items) == 2 {
+					schema := items[0].GetString_().GetStr()
+					table := items[1].GetString_().GetStr()
+					if len(table) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+					}
+				}
+			}
+		} else {
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+		}
+
+	// 维护操作
+	case *parser.Node_VacuumStmt:
+		// VACUUM - 可能获取表锁
+		for _, rel := range stmt.VacuumStmt.GetRels() {
+			if rel.GetVacuumRelation() != nil && rel.GetVacuumRelation().GetRelation() != nil {
+				schema := rel.GetVacuumRelation().GetRelation().GetSchemaname()
+				table := rel.GetVacuumRelation().GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+		}
+
+	case *parser.Node_ClusterStmt:
+		// CLUSTER - 聚簇表，会锁表
+		if stmt.ClusterStmt.GetRelation() != nil {
+			schema := stmt.ClusterStmt.GetRelation().GetSchemaname()
+			table := stmt.ClusterStmt.GetRelation().GetRelname()
+			if len(schema) == 0 {
+				schema = currentSchema
+			}
+			if len(table) > 0 {
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+			}
+		}
+
+	case *parser.Node_RefreshMatViewStmt:
+		// REFRESH MATERIALIZED VIEW - 刷新物化视图
+		if stmt.RefreshMatViewStmt.GetRelation() != nil {
+			schema := stmt.RefreshMatViewStmt.GetRelation().GetSchemaname()
+			table := stmt.RefreshMatViewStmt.GetRelation().GetRelname()
+			if len(schema) == 0 {
+				schema = currentSchema
+			}
+			if len(table) > 0 {
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+			}
+		}
+
+	case *parser.Node_ReindexStmt:
+		// REINDEX - 重建索引，根据范围类型处理
+		reindexKind := stmt.ReindexStmt.GetKind()
+		switch reindexKind {
+		case parser.ReindexObjectType_REINDEX_OBJECT_INDEX:
+			// REINDEX INDEX - 重建特定索引
+			if stmt.ReindexStmt.GetRelation() != nil {
+				schema := stmt.ReindexStmt.GetRelation().GetSchemaname()
+				indexName := stmt.ReindexStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(indexName) > 0 {
+					// 通过索引名查询对应的表名
+					tableName, err := getTableNameByIndexName(e, schema, indexName)
+					if err != nil {
+						// 无法查询到具体表名时，至少提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					} else if len(tableName) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: tableName})
+					} else {
+						// 查询成功但没有表名，提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					}
+				}
+			}
+
+		case parser.ReindexObjectType_REINDEX_OBJECT_TABLE:
+			// REINDEX TABLE - 重建表的所有索引
+			if stmt.ReindexStmt.GetRelation() != nil {
+				schema := stmt.ReindexStmt.GetRelation().GetSchemaname()
+				table := stmt.ReindexStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+
+		case parser.ReindexObjectType_REINDEX_OBJECT_SCHEMA:
+			// REINDEX SCHEMA - 重建schema下所有表的索引
+			schemaName := stmt.ReindexStmt.GetName()
+			if len(schemaName) > 0 {
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schemaName, Table: ""})
+			}
+
+		case parser.ReindexObjectType_REINDEX_OBJECT_SYSTEM:
+			// REINDEX SYSTEM - 重建系统目录的索引
+			// 系统目录在 pg_catalog schema 中
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: "pg_catalog", Table: ""})
+
+		case parser.ReindexObjectType_REINDEX_OBJECT_DATABASE:
+			// REINDEX DATABASE - 重建整个数据库的索引
+			// 检查所有schema
+			tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+
+		default:
+			// 未知类型，尝试从 relation 字段获取信息
+			if stmt.ReindexStmt.GetRelation() != nil {
+				schema := stmt.ReindexStmt.GetRelation().GetSchemaname()
+				table := stmt.ReindexStmt.GetRelation().GetRelname()
+				if len(schema) == 0 {
+					schema = currentSchema
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	default:
+		// 检查所有
+		tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+
+	}
+
+	return tableInfos, nil
+}
+
+// extractTableInfoFromDropStmt 从 DROP 语句中提取表信息
+func extractTableInfoFromDropStmt(e *executor.Executor, stmt *parser.DropStmt, removeType parser.ObjectType, currentSchema string) ([]DDLTableInfo, error) {
+	var tableInfos []DDLTableInfo
+
+	switch removeType {
+	case parser.ObjectType_OBJECT_SCHEMA:
+		// DROP SCHEMA - 检查该schema下所有表
+		for _, object := range stmt.GetObjects() {
+			schemaName := object.GetString_().GetStr()
+			if len(schemaName) > 0 {
+				tableInfos = append(tableInfos, DDLTableInfo{Schema: schemaName, Table: ""})
+			}
+		}
+
+	case parser.ObjectType_OBJECT_TABLE:
+		// DROP TABLE - 直接检查表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, table string
+				if len(items) == 1 {
+					schema = currentSchema
+					table = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					table = items[1].GetString_().GetStr()
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_INDEX:
+		// DROP INDEX - 查询索引所属的表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, indexName string
+				if len(items) == 1 {
+					schema = currentSchema
+					indexName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					indexName = items[1].GetString_().GetStr()
+				}
+				if len(indexName) > 0 {
+					tableName, err := getTableNameByIndexName(e, schema, indexName)
+					if err != nil {
+						// 无法查询到具体表名时，至少提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					} else if len(tableName) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: tableName})
+					} else {
+						// 查询成功但没有表名，提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					}
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_VIEW:
+		// DROP VIEW - 查询视图所属的表
+		// 视图本身不锁表，但可能影响依赖的表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, viewName string
+				if len(items) == 1 {
+					schema = currentSchema
+					viewName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					viewName = items[1].GetString_().GetStr()
+				}
+				if len(viewName) > 0 {
+					// 视图本身不锁表，但可能影响依赖的表，至少提取schema信息
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_MATVIEW:
+		// DROP MATERIALIZED VIEW - 物化视图可能锁表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, matViewName string
+				if len(items) == 1 {
+					schema = currentSchema
+					matViewName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					matViewName = items[1].GetString_().GetStr()
+				}
+				if len(matViewName) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: matViewName})
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_TRIGGER:
+		// DROP TRIGGER - 查询触发器所属的表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, triggerName string
+				if len(items) == 1 {
+					schema = currentSchema
+					triggerName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = currentSchema
+					triggerName = items[1].GetString_().GetStr()
+				} else if len(items) == 3 {
+					schema = items[0].GetString_().GetStr()
+					triggerName = items[2].GetString_().GetStr()
+				}
+				if len(triggerName) > 0 {
+					tableName, err := getTableNameByTriggerName(e, schema, triggerName)
+					if err != nil {
+						// 无法查询到具体表名时，至少提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					} else if len(tableName) > 0 {
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: tableName})
+					} else {
+						// 查询成功但没有表名，提取schema信息
+						tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+					}
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_FUNCTION, parser.ObjectType_OBJECT_PROCEDURE:
+		// DROP FUNCTION/PROCEDURE - 函数/存储过程可能影响表
+		// 函数/存储过程删除通常不会直接锁表，但可能影响依赖
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, funcName string
+				if len(items) == 1 {
+					schema = currentSchema
+					funcName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					funcName = items[1].GetString_().GetStr()
+				}
+				if len(funcName) > 0 {
+					// 函数/存储过程删除通常不会直接锁表，但可能影响依赖，至少提取schema信息
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+			if object.GetObjectWithArgs() != nil {
+				if len(object.GetObjectWithArgs().Objname) == 1 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: currentSchema, Table: ""})
+				}
+				if len(object.GetObjectWithArgs().Objname) == 2 {
+					schema := object.GetObjectWithArgs().Objname[0].GetString_().GetStr()
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_SEQUENCE:
+		// DROP SEQUENCE - 序列通常不锁表
+		// 但可能影响使用该序列的表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, seqName string
+				if len(items) == 1 {
+					schema = currentSchema
+					seqName = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					seqName = items[1].GetString_().GetStr()
+				}
+				if len(seqName) > 0 {
+					// 序列删除可能影响使用该序列的表，至少提取schema信息
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: ""})
+				}
+			}
+		}
+
+	case parser.ObjectType_OBJECT_FOREIGN_TABLE:
+		// DROP FOREIGN TABLE - 外部表
+		for _, object := range stmt.GetObjects() {
+			if object.GetList() != nil {
+				items := object.GetList().GetItems()
+				var schema, table string
+				if len(items) == 1 {
+					schema = currentSchema
+					table = items[0].GetString_().GetStr()
+				} else if len(items) == 2 {
+					schema = items[0].GetString_().GetStr()
+					table = items[1].GetString_().GetStr()
+				}
+				if len(table) > 0 {
+					tableInfos = append(tableInfos, DDLTableInfo{Schema: schema, Table: table})
+				}
+			}
+		}
+
+	default:
+		tableInfos = append(tableInfos, DDLTableInfo{Schema: "", Table: ""})
+	}
+
+	return tableInfos, nil
+}
+
+// getTableNameByIndexName 通过索引名查询对应的表名
+func getTableNameByIndexName(e *executor.Executor, schema, indexName string) (string, error) {
+	if e == nil {
+		return "", fmt.Errorf("executor is nil")
+	}
+
+	// 查询索引所属的表名
+	query := `
+		SELECT t.relname as table_name
+		FROM pg_class i
+		JOIN pg_index idx ON i.oid = idx.indexrelid
+		JOIN pg_class t ON idx.indrelid = t.oid
+		JOIN pg_namespace n ON t.relnamespace = n.oid
+		WHERE i.relname = $1 AND n.nspname = $2
+	`
+
+	results, err := e.Db.Query(query, indexName, schema)
+	if err != nil {
+		return "", fmt.Errorf("failed to get table name for index %s.%s: %v", schema, indexName, err)
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("index %s.%s not found", schema, indexName)
+	}
+
+	tableName := results[0]["table_name"].String
+	return tableName, nil
+}
+
+// getTableNameByTriggerName 通过触发器名查询对应的表名
+func getTableNameByTriggerName(e *executor.Executor, schema, triggerName string) (string, error) {
+	if e == nil {
+		return "", fmt.Errorf("executor is nil")
+	}
+
+	// 查询触发器所属的表名
+	query := `
+		SELECT t.relname as table_name
+		FROM pg_trigger tr
+		JOIN pg_class t ON tr.tgrelid = t.oid
+		JOIN pg_namespace n ON t.relnamespace = n.oid
+		WHERE tr.tgname = $1 AND n.nspname = $2
+	`
+
+	results, err := e.Db.Query(query, triggerName, schema)
+	if err != nil {
+		return "", fmt.Errorf("failed to get table name for trigger %s.%s: %v", schema, triggerName, err)
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("trigger %s.%s not found", schema, triggerName)
+	}
+
+	tableName := results[0]["table_name"].String
+	return tableName, nil
 }

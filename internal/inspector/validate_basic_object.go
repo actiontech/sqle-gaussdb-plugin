@@ -2,14 +2,36 @@ package inspector
 
 import (
 	"fmt"
+	"github.com/actiontech/dms/pkg/dms-common/i18nPkg"
+	"github.com/actiontech/sqle-pg-plugin/internal/utils"
+	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
+	parser "github.com/pganalyze/pg_query_go/v2"
+	"golang.org/x/text/language"
 	"reflect"
 	"strings"
 	"sync"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
-	"github.com/actiontech/sqle-pg-plugin/internal/utils"
-	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 )
+
+// newAuditResult creates an AuditResult with I18nAuditResultInfo instead of the removed Message field
+func newAuditResult(level driverV2.RuleLevel, message string) *driverV2.AuditResult {
+	return &driverV2.AuditResult{
+		Level: level,
+		I18nAuditResultInfo: map[language.Tag]driverV2.AuditResultInfo{
+			i18nPkg.DefaultLang: {Message: message},
+		},
+	}
+}
+
+// getAuditResultMessage extracts the default language message from an AuditResult
+func getAuditResultMessage(ar *driverV2.AuditResult) string {
+	if ar == nil {
+		return ""
+	}
+	if info, ok := ar.I18nAuditResultInfo[i18nPkg.DefaultLang]; ok {
+		return info.Message
+	}
+	return ""
+}
 
 const (
 	SchemaNotExist = "schema[%s]不存在"
@@ -37,7 +59,7 @@ type OperatedTable struct {
 
 // Validate :校验基础对象
 func (v *ValidateBasicObject) Validate() (*driverV2.AuditResult, error) {
-	auditResult := &driverV2.AuditResult{Level: driverV2.RuleLevelNull, Message: ""}
+	auditResult := newAuditResult(driverV2.RuleLevelNull, "")
 	var subQueries []*parser.SelectStmt
 	var err error
 	switch stmt := v.RawStmt.GetStmt().GetNode().(type) {
@@ -50,9 +72,9 @@ func (v *ValidateBasicObject) Validate() (*driverV2.AuditResult, error) {
 		auditResult, err = v.ValidateCreateTable(ownerName, tableName)
 	case *parser.Node_AlterTableStmt:
 		// 区分alter table/alter index
-		if stmt.AlterTableStmt.GetObjtype() == parser.ObjectType_OBJECT_TABLE {
+		if stmt.AlterTableStmt.Relkind == parser.ObjectType_OBJECT_TABLE {
 			auditResult, err = v.ValidateAlterTable(stmt.AlterTableStmt)
-		} else if stmt.AlterTableStmt.GetObjtype() == parser.ObjectType_OBJECT_INDEX {
+		} else if stmt.AlterTableStmt.Relkind == parser.ObjectType_OBJECT_INDEX {
 			schemaName := stmt.AlterTableStmt.Relation.Schemaname
 			if len(schemaName) == 0 {
 				schemaName = v.PgContext.DatabaseInfo.CurrentSchema
@@ -60,16 +82,10 @@ func (v *ValidateBasicObject) Validate() (*driverV2.AuditResult, error) {
 			indexName := stmt.AlterTableStmt.Relation.Relname
 			isIndex, err := v.PgContext.IsExistIndex(schemaName, "", indexName)
 			if err != nil {
-				return &driverV2.AuditResult{
-					Level:   driverV2.RuleLevelWarn,
-					Message: fmt.Sprintf("校验索引[%s.%s]是否存在错误，err=%s", schemaName, indexName, err),
-				}, err
+				return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf("校验索引[%s.%s]是否存在错误，err=%s", schemaName, indexName, err)), err
 			}
 			if !isIndex {
-				return &driverV2.AuditResult{
-					Level:   driverV2.RuleLevelWarn,
-					Message: fmt.Sprintf(IndexNotExist, schemaName, indexName),
-				}, nil
+				return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(IndexNotExist, schemaName, indexName)), nil
 			}
 		}
 	case *parser.Node_IndexStmt:
@@ -117,18 +133,18 @@ func (v *ValidateBasicObject) Validate() (*driverV2.AuditResult, error) {
 				relname := from.GetRangeVar().GetRelname()
 				if isExistSchema, _ := v.PgContext.IsExistSchema(v.PgContext.DatabaseInfo.DatabaseName, schemaname); !isExistSchema {
 					auditResult.Level = driverV2.RuleLevelWarn
-					auditResult.Message = fmt.Sprintf(SchemaNotExist, schemaname)
+					auditResult.I18nAuditResultInfo[i18nPkg.DefaultLang] = driverV2.AuditResultInfo{Message: fmt.Sprintf(SchemaNotExist, schemaname)}
 					return auditResult, nil
 				}
 				isExistTable, err := v.PgContext.IsExistTable(schemaname, relname)
 				if err != nil {
 					auditResult.Level = driverV2.RuleLevelWarn
-					auditResult.Message = err.Error()
+					auditResult.I18nAuditResultInfo[i18nPkg.DefaultLang] = driverV2.AuditResultInfo{Message: err.Error()}
 					return auditResult, nil
 				}
 				if !isExistTable {
 					auditResult.Level = driverV2.RuleLevelWarn
-					auditResult.Message = fmt.Sprintf(TableNotExist, schemaname, relname)
+					auditResult.I18nAuditResultInfo[i18nPkg.DefaultLang] = driverV2.AuditResultInfo{Message: fmt.Sprintf(TableNotExist, schemaname, relname)}
 					return auditResult, nil
 				}
 			}
@@ -168,10 +184,7 @@ func (v *ValidateBasicObject) Validate() (*driverV2.AuditResult, error) {
 	}
 
 	if err != nil {
-		return &driverV2.AuditResult{
-			Level:   driverV2.RuleLevelWarn,
-			Message: fmt.Sprintf("基础对象校验错误，err=%s", err),
-		}, err
+		return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf("基础对象校验错误，err=%s", err)), err
 	}
 	return auditResult, nil
 }
@@ -204,12 +217,9 @@ func validateDeleteUsingTable(usingClauses []*parser.Node, v *ValidateBasicObjec
 		}
 	}
 	if len(notUsingTables) > 0 {
-		return &driverV2.AuditResult{
-			Level:   driverV2.RuleLevelWarn,
-			Message: strings.Join(notUsingTables, ";"),
-		}, nil
+		return newAuditResult(driverV2.RuleLevelWarn, strings.Join(notUsingTables, ";")), nil
 	}
-	return &driverV2.AuditResult{Level: driverV2.RuleLevelNull, Message: ""}, nil
+	return newAuditResult(driverV2.RuleLevelNull, ""), nil
 }
 
 // ValidateCreateSchema :校验创建Schema
@@ -223,10 +233,7 @@ func (v *ValidateBasicObject) ValidateCreateSchema(schemaName string) (*driverV2
 		level = driverV2.RuleLevelWarn
 		message = fmt.Sprintf(SchemaExist, schemaName)
 	}
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // DropStatement :校验删除Statement
@@ -235,16 +242,13 @@ func (v *ValidateBasicObject) DropStatement(stmt *parser.DropStmt) (*driverV2.Au
 	case parser.ObjectType_OBJECT_SCHEMA:
 		objects := stmt.Objects
 		for _, object := range objects {
-			schemaName := object.GetString_().GetSval()
+			schemaName := object.GetString_().GetStr()
 			isSchema, err := v.PgContext.IsExistSchema(v.PgContext.CurrentDatabase, schemaName)
 			if err != nil {
 				return nil, err
 			}
 			if !isSchema {
-				return &driverV2.AuditResult{
-					Level:   driverV2.RuleLevelWarn,
-					Message: fmt.Sprintf(SchemaNotExist, schemaName),
-				}, nil
+				return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(SchemaNotExist, schemaName)), nil
 			}
 		}
 	case parser.ObjectType_OBJECT_TABLE:
@@ -257,10 +261,10 @@ func (v *ValidateBasicObject) DropStatement(stmt *parser.DropStmt) (*driverV2.Au
 			items := object.GetList().GetItems()
 			if len(items) == 1 {
 				schemaName = v.PgContext.DatabaseInfo.CurrentSchema
-				tableName = items[0].GetString_().GetSval()
+				tableName = items[0].GetString_().GetStr()
 			} else if len(items) == 2 {
-				schemaName = items[0].GetString_().GetSval()
-				tableName = items[1].GetString_().GetSval()
+				schemaName = items[0].GetString_().GetStr()
+				tableName = items[1].GetString_().GetStr()
 			}
 			result, err = validateSchemaExist(schemaName, v)
 			if err != nil {
@@ -274,10 +278,7 @@ func (v *ValidateBasicObject) DropStatement(stmt *parser.DropStmt) (*driverV2.Au
 				return nil, err
 			}
 			if !isTable {
-				return &driverV2.AuditResult{
-					Level:   driverV2.RuleLevelWarn,
-					Message: fmt.Sprintf(TableNotExist, schemaName, tableName),
-				}, nil
+				return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(TableNotExist, schemaName, tableName)), nil
 			}
 		}
 	case parser.ObjectType_OBJECT_INDEX:
@@ -290,10 +291,10 @@ func (v *ValidateBasicObject) DropStatement(stmt *parser.DropStmt) (*driverV2.Au
 			items := object.GetList().GetItems()
 			if len(items) == 1 {
 				schemaName = v.PgContext.DatabaseInfo.CurrentSchema
-				indexName = items[0].GetString_().GetSval()
+				indexName = items[0].GetString_().GetStr()
 			} else if len(items) == 2 {
-				schemaName = items[0].GetString_().GetSval()
-				indexName = items[1].GetString_().GetSval()
+				schemaName = items[0].GetString_().GetStr()
+				indexName = items[1].GetString_().GetStr()
 			}
 			result, err = validateSchemaExist(schemaName, v)
 			if err != nil {
@@ -307,17 +308,11 @@ func (v *ValidateBasicObject) DropStatement(stmt *parser.DropStmt) (*driverV2.Au
 				return nil, err
 			}
 			if !isIndex {
-				return &driverV2.AuditResult{
-					Level:   driverV2.RuleLevelWarn,
-					Message: fmt.Sprintf(IndexNotExist, schemaName, indexName),
-				}, nil
+				return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(IndexNotExist, schemaName, indexName)), nil
 			}
 		}
 	}
-	return &driverV2.AuditResult{
-		Level:   driverV2.RuleLevelNull,
-		Message: "",
-	}, nil
+	return newAuditResult(driverV2.RuleLevelNull, ""), nil
 }
 
 // ValidateCreateTable :校验创建table
@@ -341,10 +336,7 @@ func (v *ValidateBasicObject) ValidateCreateTable(schemaName, tableName string) 
 		level = driverV2.RuleLevelWarn
 		message = fmt.Sprintf(TableExist, schemaName, tableName)
 	}
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateAlterTable :校验修改table
@@ -391,10 +383,7 @@ func (v *ValidateBasicObject) ValidateAlterTable(stmt *parser.AlterTableStmt) (*
 			}
 		}
 	}
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateIndex :校验索引
@@ -448,10 +437,7 @@ func (v *ValidateBasicObject) ValidateIndex(stmt *parser.IndexStmt) (*driverV2.A
 			break
 		}
 	}
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateRename :校验重命名
@@ -508,10 +494,7 @@ func (v *ValidateBasicObject) ValidateRename(stmt *parser.RenameStmt) (*driverV2
 			return nil, err
 		}
 		if !isTable {
-			return &driverV2.AuditResult{
-				Level:   driverV2.RuleLevelWarn,
-				Message: fmt.Sprintf(TableNotExist, ownerName, tableName),
-			}, nil
+			return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(TableNotExist, ownerName, tableName)), nil
 		}
 		// 校验新表名，存在报错
 		isTable, err = v.PgContext.IsExistTable(ownerName, stmt.Newname)
@@ -520,10 +503,7 @@ func (v *ValidateBasicObject) ValidateRename(stmt *parser.RenameStmt) (*driverV2
 		}
 		if isTable {
 			level = driverV2.RuleLevelWarn
-			return &driverV2.AuditResult{
-				Level:   driverV2.RuleLevelWarn,
-				Message: fmt.Sprintf(TableExist, ownerName, stmt.Newname),
-			}, nil
+			return newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(TableExist, ownerName, stmt.Newname)), nil
 		}
 	case parser.ObjectType_OBJECT_COLUMN:
 		ownerName, tableName := GetOwnerNameAndTableName(stmt.Relation, v.PgContext)
@@ -551,10 +531,7 @@ func (v *ValidateBasicObject) ValidateRename(stmt *parser.RenameStmt) (*driverV2
 			}
 		}
 	}
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateInsertColumns :校验insert列
@@ -590,10 +567,7 @@ func (v *ValidateBasicObject) ValidateInsertColumns(stmt *parser.Node_InsertStmt
 			ownerName, tableName, strings.Join(columns, ","))
 	}
 
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateUpdateColumns :校验update列
@@ -627,10 +601,7 @@ func (v *ValidateBasicObject) ValidateUpdateColumns(stmt *parser.Node_UpdateStmt
 	if len(columns) > 0 {
 		level = driverV2.RuleLevelWarn
 		message = fmt.Sprintf("update表[%s.%s]set的列[%s]不存在", ownerName, tableName, strings.Join(columns, ","))
-		return &driverV2.AuditResult{
-			Level:   level,
-			Message: message,
-		}, nil
+		return newAuditResult(level, message), nil
 	}
 
 	// 后面校验使用
@@ -680,10 +651,7 @@ func (v *ValidateBasicObject) ValidateUpdateColumns(stmt *parser.Node_UpdateStmt
 		message += fmt.Sprintf("update表[%s.%s]where条件中:%s", ownerName, tableName, strings.Join(msg, ";"))
 	}
 
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 // ValidateDeleteColumns :校验delete列
@@ -749,10 +717,7 @@ func (v *ValidateBasicObject) ValidateDeleteColumns(stmt *parser.Node_DeleteStmt
 		message += fmt.Sprintf("delete表[%s.%s]where条件中:%s", ownerName, tableName, strings.Join(msg, ";"))
 	}
 
-	return &driverV2.AuditResult{
-		Level:   level,
-		Message: message,
-	}, nil
+	return newAuditResult(level, message), nil
 }
 
 func RemoveDuplicates(elements []string) []string {
@@ -824,16 +789,16 @@ func validateWhereFieldExist(expr *parser.Node, ownerName, tableName string, ope
 	columnName := ""
 	fields := expr.GetColumnRef().GetFields()
 	if len(fields) == 1 {
-		columnName = fields[0].GetString_().GetSval()
+		columnName = fields[0].GetString_().GetStr()
 	} else if len(fields) == 2 {
-		table = fields[0].GetString_().GetSval()
-		columnName = fields[1].GetString_().GetSval()
+		table = fields[0].GetString_().GetStr()
+		columnName = fields[1].GetString_().GetStr()
 	} else if len(fields) == 3 {
-		schema = fields[0].GetString_().GetSval()
-		table = fields[1].GetString_().GetSval()
-		columnName = fields[2].GetString_().GetSval()
+		schema = fields[0].GetString_().GetStr()
+		table = fields[1].GetString_().GetStr()
+		columnName = fields[2].GetString_().GetStr()
 	} else {
-		columnName = fields[len(fields)-1].GetString_().GetSval()
+		columnName = fields[len(fields)-1].GetString_().GetStr()
 	}
 
 	for _, operatedTable := range operatedTables {
@@ -857,7 +822,7 @@ func validateWhereFieldExist(expr *parser.Node, ownerName, tableName string, ope
 }
 
 func validateDmlSchemaAndTableExist(subQueries []*parser.SelectStmt, v *ValidateBasicObject) (*driverV2.AuditResult, error) {
-	auditResult := &driverV2.AuditResult{Level: driverV2.RuleLevelNull, Message: ""}
+	auditResult := newAuditResult(driverV2.RuleLevelNull, "")
 	message := make([]string, 0)
 	schemaMap := make(map[string]string)
 	tableNameMap := make(map[string]string)
@@ -915,16 +880,13 @@ func validateDmlSchemaAndTableExist(subQueries []*parser.SelectStmt, v *Validate
 	}
 
 	if len(message) > 0 {
-		auditResult = &driverV2.AuditResult{
-			Level:   driverV2.RuleLevelWarn,
-			Message: strings.Join(message, ";"),
-		}
+		auditResult = newAuditResult(driverV2.RuleLevelWarn, strings.Join(message, ";"))
 	}
 	return auditResult, nil
 }
 
 func validateSchemaAndTableNameForDmlFromClause(rangeVar *parser.RangeVar, v *ValidateBasicObject, schemaMap map[string]string, withTablesMap map[string]string, tableNameMap map[string]string) (*driverV2.AuditResult, error) {
-	auditResult := &driverV2.AuditResult{Level: driverV2.RuleLevelNull, Message: ""}
+	auditResult := newAuditResult(driverV2.RuleLevelNull, "")
 	if rangeVar != nil {
 		schemaName := rangeVar.Schemaname
 		if len(schemaName) == 0 {
@@ -942,11 +904,7 @@ func validateSchemaAndTableNameForDmlFromClause(rangeVar *parser.RangeVar, v *Va
 			if !ok {
 				schemaMap[schemaName] = schemaName
 			}
-			auditResult = &driverV2.AuditResult{
-				Level:   driverV2.RuleLevelWarn,
-				Message: fmt.Sprintf(SchemaNotExist, schemaName),
-			}
-			return auditResult, nil
+			return auditResult, fmt.Errorf(SchemaNotExist, schemaName)
 		}
 		// with 表名存在，跳过后面的校验
 		if _, ok := withTablesMap[tableName]; ok {
@@ -993,7 +951,7 @@ func parseWithTables(withClause *parser.WithClause) map[string]string {
 func validateDmlSchemaNameAndTableNameExist(relation *parser.RangeVar, v *ValidateBasicObject) (*driverV2.AuditResult, error) {
 	var err error
 	var isSchema, isTable bool
-	auditResult := &driverV2.AuditResult{Level: driverV2.RuleLevelNull, Message: ""}
+	auditResult := newAuditResult(driverV2.RuleLevelNull, "")
 	schemaName := relation.Schemaname
 	tableName := relation.Relname
 	if len(schemaName) == 0 {
@@ -1004,10 +962,7 @@ func validateDmlSchemaNameAndTableNameExist(relation *parser.RangeVar, v *Valida
 		return auditResult, err
 	}
 	if !isSchema {
-		auditResult = &driverV2.AuditResult{
-			Level:   driverV2.RuleLevelWarn,
-			Message: fmt.Sprintf(SchemaNotExist, schemaName),
-		}
+		auditResult = newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(SchemaNotExist, schemaName))
 		return auditResult, nil
 	}
 	isTable, err = v.PgContext.IsExistTable(schemaName, tableName)
@@ -1015,44 +970,35 @@ func validateDmlSchemaNameAndTableNameExist(relation *parser.RangeVar, v *Valida
 		return auditResult, err
 	}
 	if !isTable {
-		auditResult = &driverV2.AuditResult{
-			Level:   driverV2.RuleLevelWarn,
-			Message: fmt.Sprintf(TableNotExist, schemaName, tableName),
-		}
+		auditResult = newAuditResult(driverV2.RuleLevelWarn, fmt.Sprintf(TableNotExist, schemaName, tableName))
 		return auditResult, nil
 	}
 	return auditResult, nil
 }
 
 func validateSchemaExist(schemaName string, v *ValidateBasicObject) (*driverV2.AuditResult, error) {
-	result := &driverV2.AuditResult{
-		Level:   driverV2.RuleLevelNull,
-		Message: "",
-	}
+	result := newAuditResult(driverV2.RuleLevelNull, "")
 	isSchema, err := v.PgContext.IsExistSchema(v.PgContext.CurrentDatabase, schemaName)
 	if err != nil {
 		return nil, err
 	}
 	if !isSchema {
 		result.Level = driverV2.RuleLevelWarn
-		result.Message = fmt.Sprintf(SchemaNotExist, schemaName)
+		result.I18nAuditResultInfo[i18nPkg.DefaultLang] = driverV2.AuditResultInfo{Message: fmt.Sprintf(SchemaNotExist, schemaName)}
 		return result, nil
 	}
 	return result, nil
 }
 
 func validateTableExist(schemaName, tableName string, v *ValidateBasicObject) (*driverV2.AuditResult, error) {
-	result := &driverV2.AuditResult{
-		Level:   driverV2.RuleLevelNull,
-		Message: "",
-	}
+	result := newAuditResult(driverV2.RuleLevelNull, "")
 	isTable, err := v.PgContext.IsExistTable(schemaName, tableName)
 	if err != nil {
 		return nil, err
 	}
 	if !isTable {
 		result.Level = driverV2.RuleLevelWarn
-		result.Message = fmt.Sprintf(TableNotExist, schemaName, tableName)
+		result.I18nAuditResultInfo[i18nPkg.DefaultLang] = driverV2.AuditResultInfo{Message: fmt.Sprintf(TableNotExist, schemaName, tableName)}
 		return result, nil
 	}
 	return result, nil

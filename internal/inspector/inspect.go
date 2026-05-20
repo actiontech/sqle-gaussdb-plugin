@@ -12,25 +12,23 @@ import (
 	"strings"
 	"time"
 
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
+	"github.com/actiontech/dms/pkg/dms-common/i18nPkg"
 	"github.com/actiontech/sqle-pg-plugin/internal/executor"
 	pkgParser "github.com/actiontech/sqle-pg-plugin/pkg/parser"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	hclog "github.com/hashicorp/go-hclog"
 	_ "github.com/jackc/pgx/v4"
+	parser "github.com/pganalyze/pg_query_go/v2"
 )
 
 const (
 	defaultDatabase      = "postgres"
 	defaultcurrentSchema = "public"
-
-	ParamKeyDefaultDatabase = "default_database"
-	ParamKeyDefaultSchema   = "default_schema"
 )
 
-// go data type map
-var goDataTypesMap = map[string]string{
+// pg data type map
+var pgDataTypesMap = map[string]string{
 	"bool":          "bool",
 	"name":          "name",
 	"int8":          "int8",
@@ -61,20 +59,11 @@ var goDataTypesMap = map[string]string{
 	"regnamespace":  "regnamespace",
 	"regconfig":     "regconfig",
 	"regdictionary": "regdictionary",
+	"geometry":      "geometry",
 }
 
 var errNoConnection = fmt.Errorf("the driver hasn't been connected to database instance")
 var errNoInitPgContext = fmt.Errorf("the pgContext hasn't been initialized")
-
-func isSyntaxError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if strings.HasPrefix(strings.TrimSpace(err.Error()), "syntax error") {
-		return true
-	}
-	return false
-}
 
 type driverImpl struct {
 	executor        *executor.Executor
@@ -110,19 +99,12 @@ func NewDriverImpl(l hclog.Logger, dt driverPkg.Dialector, ah *driverPkg.AuditHa
 	}
 	var e *executor.Executor
 	currentDatabase := ""
-	currentSchema := sql.NullString{String: defaultcurrentSchema, Valid: true}
+	currentSchema := ""
 	currentPgProcessId := 0
 	var pgContext *PgContext
 	var err error
 	if cfg.DSN != nil {
-		// param中设置的 默认数据库，默认schema
-		paramDefaultDatabase := cfg.DSN.AdditionalParams.GetParam(ParamKeyDefaultDatabase).String()
-		paramDefaultSchema := cfg.DSN.AdditionalParams.GetParam(ParamKeyDefaultSchema).String()
-		if cfg.DSN.DatabaseName == "" && paramDefaultDatabase != "" {
-			cfg.DSN.DatabaseName = paramDefaultDatabase
-		}
-		l.Debug(fmt.Sprintf("new connection, Host:%s, Port:%s, User:%s, DatabaseName:%s, AdditionalParams:%s, ParamDB:%s, ParamSchema:%s", cfg.DSN.Host, cfg.DSN.Port, cfg.DSN.User, cfg.DSN.DatabaseName, cfg.DSN.AdditionalParams, paramDefaultDatabase, paramDefaultSchema))
-
+		inputDatabaseName := cfg.DSN.DatabaseName
 		db, conn, err := dt.Open(cfg.DSN)
 		if err != nil {
 			return nil, err
@@ -144,35 +126,17 @@ func NewDriverImpl(l hclog.Logger, dt driverPkg.Dialector, ah *driverPkg.AuditHa
 		// 当前数据库
 		currentDatabase = cfg.DSN.DatabaseName
 		// 获取当前schema
-		// note: SQL select current_schema() 的返回结果有可能是 NULL
-		// https://www.postgresql.org/docs/8.3/functions-info.html
 		err = db.QueryRow("select current_schema()").Scan(&currentSchema)
 		if err != nil {
 			return nil, err
 		}
 
-		if paramDefaultSchema != "" {
-			currentSchema = sql.NullString{String: paramDefaultSchema, Valid: true}
-			sql := fmt.Sprintf("SET search_path TO %s;", paramDefaultSchema)
-			_, err := e.Db.Query(sql)
-			if err != nil {
-				return nil, err
-			}
-			l.Info(sql)
-		}
-
-		if currentSchema.Valid == false {
-			if err := currentSchema.Scan(defaultcurrentSchema); err != nil {
-				return nil, err
-			}
-		}
-
-		if len(currentDatabase) > 0 {
+		if len(inputDatabaseName) > 0 {
 			// 在线上下文
-			pgContext, err = NewPgContext(currentDatabase, currentSchema.String, e)
+			pgContext, err = NewPgContext(currentDatabase, currentSchema, e)
 		} else {
 			// 离线上下文
-			pgContext, err = NewPgContext(defaultDatabase, currentSchema.String, nil)
+			pgContext, err = NewPgContext(defaultDatabase, defaultcurrentSchema, nil)
 		}
 		if err != nil {
 			return nil, err
@@ -199,7 +163,7 @@ func NewDriverImpl(l hclog.Logger, dt driverPkg.Dialector, ah *driverPkg.AuditHa
 	return &driverImpl{
 		executor:                    e,
 		currentDatabase:             currentDatabase,
-		currentSchema:               currentSchema.String,
+		currentSchema:               currentSchema,
 		DriverImpl:                  di,
 		maxRollbackRowNumConf:       maxRollbackRows,
 		isEnableRollbackConf:        isEnableRollback,
@@ -266,7 +230,7 @@ func NewMockDriver(cfg *driverV2.Config, database, schema string, ah *driverPkg.
 	schemaInfoMap := make(map[string]*SchemaInfo)
 	schemaInfoMap[schema] = &SchemaInfo{
 		SchemaName:    schema,
-		TableInfoList: []*TableInfo{},
+		TableInfoList: make([]*TableInfo, 0),
 		IndexInfoList: make([]*IndexInfo, 0),
 	}
 	databaseInfo := &DatabaseInfo{
@@ -278,7 +242,7 @@ func NewMockDriver(cfg *driverV2.Config, database, schema string, ah *driverPkg.
 		CurrentDatabase:      database,
 		Executor:             conn,
 		DatabaseInfo:         databaseInfo,
-		PgDbTypeNameMap:      goDataTypesMap,
+		PgDbTypeNameMap:      pgDataTypesMap,
 		ExecutionPlanCache:   make(map[string]*[]PlanType),
 		DeletedSchemaMap:     make(map[string]string),
 		DeletedTableMap:      make(map[string]string),
@@ -300,21 +264,10 @@ func SqlParserFunc(sql string) (interface{}, error) {
 	return nodes[0], nil
 }
 
-func sqlParserFuncV2(sql string) (*parser.RawStmt, error) {
-	nodes, err := pkgParser.ParseSQL(sql)
-	if err != nil {
-		return nil, err
-	}
-	if len(nodes) <= 0 {
-		return nil, fmt.Errorf("can not find parse tree from SQL")
-	}
-	return nodes[0], nil
-}
-
 // 校验postgresql数据类型
 func validateDataType(ast *parser.RawStmt, dbTypeNameMap map[string]string) error {
 	// 伪类型(数据库pg_type中不存在这些数据类型，但是ddl时可以使用的类型)
-	pseudoTypes := []string{"bigserial", "decimal", "mood", "serial", "serial2", "serial4", "serial8", "smallserial", "int", "text", "int4", "bytea", "int2", "bpchar", "float8", "float4", "float8", "numeric"}
+	pseudoTypes := []string{"bigserial", "decimal", "mood", "serial", "serial2", "serial4", "serial8", "smallserial", "int"}
 	for _, dataType := range pseudoTypes {
 		// 将伪类型加到dbTypeNameMap中,如果存在就跳过
 		if _, ok := dbTypeNameMap[dataType]; !ok {
@@ -390,9 +343,9 @@ func validateDataType(ast *parser.RawStmt, dbTypeNameMap map[string]string) erro
 func getTypeName(names []*parser.Node) (string, error) {
 	columnDataType := ""
 	if len(names) >= 2 {
-		columnDataType = names[1].GetString_().GetSval()
+		columnDataType = names[1].GetString_().GetStr()
 	} else if len(names) == 1 {
-		columnDataType = names[0].GetString_().GetSval()
+		columnDataType = names[0].GetString_().GetStr()
 	} else {
 		return "", fmt.Errorf("unknown column data type:%v", names)
 	}
@@ -419,10 +372,9 @@ const (
 )
 
 type ruleHandlerContext struct {
-	RawSQL        string
 	CurrentSchema *string
 	Executor      *executor.Executor
-	PgContext     *PgContext
+	pgContext     *PgContext
 }
 
 func (c *ruleHandlerContext) GetExecutor() *executor.Executor {
@@ -440,24 +392,20 @@ func (c *ruleHandlerContext) GetCurrentSchema() string {
 	return *c.CurrentSchema
 }
 
-func (c *ruleHandlerContext) GetCurrentDatabaseCollation() string {
-	return c.PgContext.DatabaseInfo.DatabaseDefaultCollate
-}
-
-func (c *ruleHandlerContext) GetRawSQL() string {
-	if c == nil {
-		return ""
-	}
-	return c.RawSQL
-}
-
 func (c *ruleHandlerContext) GetPgContext() *PgContext {
-	if c == nil || c.PgContext == nil {
+	if c == nil || c.pgContext == nil {
 		return nil
 	}
-	return c.PgContext
+	return c.pgContext
 }
 
+/*
+审核sql
+
+	在审核SQL时，如果出现SQL审核的基础校验报错，则写日志并且跳过该条SQL的审核。
+	若是审核规则报错，则仅跳过该规则。这样可以不阻塞流程。
+	TODO 后续需要增加用户可感知的提示。
+*/
 func (p *driverImpl) Audit(ctx context.Context, sqls []string) ([]*driverV2.AuditResults, error) {
 	var (
 		err           error
@@ -465,34 +413,37 @@ func (p *driverImpl) Audit(ctx context.Context, sqls []string) ([]*driverV2.Audi
 		result        *driverV2.AuditResult
 		dbTypeNameMap map[string]string
 	)
-	results := make([]*driverV2.AuditResults, 0)
+	results := make([]*driverV2.AuditResults, 0, len(sqls))
 	if p.pgContext.UsingType == UsingTypeOnline {
 		dbTypeNameMap, err = p.executor.GetDataTypeNameMap(nil, p.currentSchema)
 		if err != nil {
-			return nil, err
+			return results, err
+		}
+		// 将补充的PG数据类型字典合并到已有的数据类型字典中
+		for key, value := range pgDataTypesMap {
+			if _, exist := dbTypeNameMap[key]; !exist {
+				dbTypeNameMap[key] = value
+			}
 		}
 	} else {
 		// 来自预定义的pg数据类型
-		dbTypeNameMap = goDataTypesMap
+		dbTypeNameMap = pgDataTypesMap
 	}
 	p.pgContext.PgDbTypeNameMap = dbTypeNameMap
 
 	for i, auditSql := range sqls {
-		ruleResults := driverV2.NewAuditResults()
-
 		ast, err = SqlParserFunc(auditSql)
+		ruleResults := driverV2.NewAuditResults()
 		if err != nil {
-			if !isSyntaxError(err) {
-				return nil, fmt.Errorf("parse auditSql failed: %v", err)
-			}
-			ruleResults.Add(driverV2.RuleLevelWarn, "", "语法错误或者解析器不支持，请人工确认SQL正确性")
+			p.Log.Error("parse auditSql failed auditSql %v err %v", auditSql, err)
 			results = append(results, ruleResults)
 			continue
 		}
-
 		err = validateDataType(ast.(*parser.RawStmt), dbTypeNameMap)
 		if err != nil {
-			return nil, fmt.Errorf("auditSql data type is invalid: %s", err)
+			p.Log.Error("validate auditSql failed auditSql %v err %v", auditSql, err)
+			results = append(results, ruleResults)
+			continue
 		}
 
 		// 校验基础对象
@@ -500,7 +451,9 @@ func (p *driverImpl) Audit(ctx context.Context, sqls []string) ([]*driverV2.Audi
 			validateBasicObject := ValidateBasicObject{PgContext: p.pgContext, RawStmt: ast.(*parser.RawStmt)}
 			validateResult, validateErr := validateBasicObject.Validate()
 			if validateErr != nil {
-				return nil, validateErr
+				p.Log.Error("validate auditSql failed auditSql %v err %v", auditSql, err)
+				results = append(results, ruleResults)
+				continue
 			}
 			if validateResult.Level != driverV2.RuleLevelNull {
 				ruleResults.Results = append(ruleResults.Results, validateResult)
@@ -522,16 +475,20 @@ func (p *driverImpl) Audit(ctx context.Context, sqls []string) ([]*driverV2.Audi
 			handlerCtx := ruleHandlerContext{
 				CurrentSchema: &p.currentSchema,
 				Executor:      p.executor,
-				PgContext:     p.pgContext,
+				pgContext:     p.pgContext,
 			}
 			ctx = context.WithValue(ctx, CtxKeyRuleHandlerCtx, handlerCtx)
 			result, err = p.Ah.Audit(ctx, rule, auditSql, sqls[i+1:])
 			if err != nil {
-				log.Printf("规则[%s][%s]审核错误:%s", rule.Name, rule.Desc, err)
-				ruleResults.AddResultWithError(rule.Level, rule.Name, err.Error(), true, rule.Desc)
+				// Extract Desc from I18nRuleInfo for error logging
+				descI18n := getRuleDescI18n(rule)
+				log.Printf("规则[%s]审核错误:%s", rule.Name, err)
+				ruleResults.AddResultWithError(rule.Level, rule.Name, err.Error(), true, descI18n)
 				continue
 			}
-			ruleResults.Add(result.Level, result.RuleName, result.Message)
+			if result.Level != "" {
+				ruleResults.Results = append(ruleResults.Results, result)
+			}
 		}
 		results = append(results, ruleResults)
 
@@ -540,62 +497,38 @@ func (p *driverImpl) Audit(ctx context.Context, sqls []string) ([]*driverV2.Audi
 			handlePgContext := HandlePgContext{PgContext: p.pgContext, RawStmt: ast.(*parser.RawStmt)}
 			err = handlePgContext.Handle()
 			if err != nil {
-				return nil, err
+				p.Log.Error("handle pg context failed auditSql %v err %v", auditSql, err)
+				continue
 			}
 		}
 	}
 	return results, nil
 }
 
-func (i *driverImpl) Parse(ctx context.Context, sqlText string) (nodes []driverV2.Node, err error) {
-	appendRawStmtsToDrvNodes := func(drvNodes []driverV2.Node, rawStmts []*parser.RawStmt, rawSQLs string) ([]driverV2.Node, error) {
-		for _, n := range rawStmts {
-			typ := sqlType(n.Stmt.GetNode())
-			//sqlText, _ := parser.Deparse(&parser.ParseResult{Stmts: []*parser.RawStmt{n}})
-			sqlContent := ""
-			// 如果解析的sql语句没有分号结尾，这里的StmtLen=0
-			if n.StmtLen == 0 {
-				sqlContent = rawSQLs[n.StmtLocation:]
-			} else {
-				sqlContent = rawSQLs[n.StmtLocation : n.StmtLocation+n.StmtLen]
-			}
-			fingerprint, innerErr := pkgParser.Fingerprint(sqlContent)
-			if innerErr != nil {
-				return nil, innerErr
-			}
-			drvNodes = append(drvNodes, driverV2.Node{Text: sqlContent, Type: typ, Fingerprint: fingerprint})
-		}
-		return drvNodes, nil
-	}
-
-	rawStmts, err := pkgParser.ParseSQL(sqlText)
+func (i *driverImpl) Parse(ctx context.Context, sqlText string) ([]driverV2.Node, error) {
+	nodes, err := pkgParser.ParseSQL(sqlText)
 	if err != nil {
-		if !isSyntaxError(err) {
-			return nil, err
-		}
-		// todo 临时解决POC问题：只要有一条SQL语法错误，就可能解析不出来其他正确的SQL。
-		// todo 解决方法：简单粗暴的使用分号分割
-		sqls := strings.Split(strings.Trim(sqlText, ";"), ";")
-		for _, sql := range sqls {
-			newNodes, err := pkgParser.ParseSQL(sql)
-			if err != nil {
-				if !isSyntaxError(err) {
-					return nil, err
-				}
-				nodes = append(nodes, driverV2.Node{
-					Text:        sql,
-					Type:        "DDL",
-					Fingerprint: sql,
-				})
-			}
-			if nodes, err = appendRawStmtsToDrvNodes(nodes, newNodes, sql); err != nil {
-				return nil, err
-			}
-		}
-		return nodes, nil
+		return nil, err
 	}
+	ns := make([]driverV2.Node, 0, len(nodes))
 
-	return appendRawStmtsToDrvNodes(nodes, rawStmts, sqlText)
+	for _, n := range nodes {
+		typ := sqlType(n.Stmt.GetNode())
+		//sqlText, _ := parser.Deparse(&parser.ParseResult{Stmts: []*parser.RawStmt{n}})
+		sqlContent := ""
+		// 如果解析的sql语句没有分号结尾，这里的StmtLen=0
+		if n.StmtLen == 0 {
+			sqlContent = sqlText[n.StmtLocation:]
+		} else {
+			sqlContent = sqlText[n.StmtLocation : n.StmtLocation+n.StmtLen]
+		}
+		fingerprint, innerErr := pkgParser.Fingerprint(sqlContent)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		ns = append(ns, driverV2.Node{Text: sqlContent, Type: typ, Fingerprint: fingerprint})
+	}
+	return ns, nil
 }
 
 func sqlType(typ interface{}) string {
@@ -653,14 +586,10 @@ func sqlType(typ interface{}) string {
 }]
 */
 
-// todo 增加例子
 type PlanType struct {
 	NodeType            string      `json:"Node Type"`
 	PlanRows            int64       `json:"Plan Rows"`
 	PlanWidth           int64       `json:"Plan Width"`
-	NodeExpr            string      `json:"Node expr"`
-	Nodes               string      `json:"Node/s"`
-	NodeList            []string    `json:"Node List"`
 	TotalCost           float64     `json:"Total Cost"`
 	ActualRows          int64       `json:"Actual Rows"`
 	ActualLoops         int64       `json:"Actual Loops"`
@@ -676,8 +605,6 @@ type PlanType struct {
 	PlannedPartitions   int64       `json:"Planned Partitions"`
 	JoinType            string      `json:"Join Type"`
 	HashCond            string      `json:"Hash Cond"`
-	HashBuckets         int64       `json:"Hash Buckets"`
-	HashBatches         int64       `json:"Hash Batches"`
 	ParentRelationship  string      `json:"Parent Relationship"`
 	RelationName        string      `json:"Relation Name"`
 	Strategy            string      `json:"Strategy"`
@@ -685,11 +612,8 @@ type PlanType struct {
 	ScanDirection       string      `json:"Scan Direction"`
 	IndexName           string      `json:"Index Name"`
 	IndexCond           string      `json:"Index Cond"`
-	Filter              string      `json:"Filter"`
 	GroupKey            []string    `json:"Group Key"`
 	SortSpaceUsed       int64       `json:"Sort Space Used"`
-	SortMethod          string      `json:"Sort Method"`
-	SortSpaceType       string      `json:"Sort Space Type"`
 	WorkersPlanned      int64       `json:"Workers Planned"`
 	LocalHitBlocks      int64       `json:"Local Hit Blocks"`
 	TempReadBlocks      int64       `json:"Temp Read Blocks"`
@@ -704,23 +628,8 @@ type PlanType struct {
 	LocalWrittenBlocks  int64       `json:"Local Written Blocks"`
 	SharedDirtiedBlocks int64       `json:"Shared Dirtied Blocks"`
 	SharedWrittenBlocks int64       `json:"Shared Written Blocks"`
-	Plan                *PlanType   `json:"Plan"`
 	Plans               *[]PlanType `json:"Plans"`
-	RemotePlanStr       string      `json:"Remote plan"`
-	RemotePlanArray     *[]PlanType `json:"Remote_plan_arry"`
 }
-
-type AnalyzePlan struct {
-	Plan          PlanType `json:"Plan"`
-	PlanningTime  float64  `json:"Planning Time"`
-	ExecutionTime float64  `json:"Execution Time"`
-}
-
-const (
-	Explain_NodeType_IndexOnlyScan = "Index Only Scan"
-	Explain_NodeType_ModifyTable   = "ModifyTable"
-	Explain_NodeType_Hash          = "Hash"
-)
 
 func (i *driverImpl) ExtractTableFromSQL(ctx context.Context, sql string) ([]*driverV2.Table, error) {
 	// check sql
@@ -748,7 +657,7 @@ func (i *driverImpl) ExtractTableFromSQL(ctx context.Context, sql string) ([]*dr
 	addSchemaTables := func(tables []schemaTable) {
 		for _, table := range tables {
 			if table.Schema == "" {
-				table.Schema = i.currentSchema
+				table.Schema = "public"
 			}
 			schemaTables = append(schemaTables, table)
 		}
@@ -770,7 +679,7 @@ func (i *driverImpl) ExtractTableFromSQL(ctx context.Context, sql string) ([]*dr
 
 			schema := t.GetRangeVar().GetSchemaname()
 			if schema == "" {
-				schema = i.currentSchema
+				schema = "public"
 			}
 			schemaTables = append(schemaTables, schemaTable{
 				Schema: schema,
@@ -857,24 +766,24 @@ func (i *driverImpl) GetTableMeta(ctx context.Context, table *driverV2.Table) (*
 func (i *driverImpl) getTableColumnsInfo(conn *executor.Executor, schema, tableName string) (driverV2.ColumnsInfo, error) {
 	columns := []driverV2.TabularDataHead{
 		{
-			Name: "COLUMN_NAME",
-			Desc: "列名",
+			Name:     "COLUMN_NAME",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("列名"),
 		},
 		{
-			Name: "Data_Type",
-			Desc: "列类型",
+			Name:     "Data_Type",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("列类型"),
 		},
 		{
-			Name: "CHARACTER_SET_NAME",
-			Desc: "列字符集",
+			Name:     "CHARACTER_SET_NAME",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("列字符集"),
 		},
 		{
-			Name: "IS_NULLABLE",
-			Desc: "是否可以为空",
+			Name:     "IS_NULLABLE",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("是否可以为空"),
 		},
 		{
-			Name: "COLUMN_DEFAULT",
-			Desc: "列默认值",
+			Name:     "COLUMN_DEFAULT",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("列默认值"),
 		},
 	}
 
@@ -908,20 +817,20 @@ func (i *driverImpl) getTableColumnsInfo(conn *executor.Executor, schema, tableN
 func (i *driverImpl) getTableIndexesInfo(conn *executor.Executor, schema, tableName string) (driverV2.IndexesInfo, error) {
 	columns := []driverV2.TabularDataHead{
 		{
-			Name: "column_name",
-			Desc: "列名",
+			Name:     "column_name",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("列名"),
 		},
 		{
-			Name: "key_name",
-			Desc: "索引名",
+			Name:     "key_name",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("索引名"),
 		},
 		{
-			Name: "unique",
-			Desc: "唯一性",
+			Name:     "unique",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("唯一性"),
 		},
 		{
-			Name: "index_type",
-			Desc: "索引类型",
+			Name:     "index_type",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("索引类型"),
 		},
 	}
 
@@ -972,8 +881,8 @@ func (i *driverImpl) Explain(ctx context.Context, conf *driverV2.ExplainConf) (*
 
 	resColumn := []driverV2.TabularDataHead{
 		{
-			Name: "explain_plan",
-			Desc: "执行计划",
+			Name:     "explain_plan",
+			I18nDesc: i18nPkg.ConvertStr2I18nAsDefaultLang("执行计划"),
 		},
 	}
 
@@ -1110,7 +1019,7 @@ func checkConvertedSql(convertedSql string) error {
 	if len(funcNames) != 1 {
 		return fmt.Errorf("converted sql is not a one target select statement. sql: %v", convertedSql)
 	}
-	if !(funcNames[0].GetString_().GetSval() == "count" && funcCall.AggStar) {
+	if !(funcNames[0].GetString_().GetStr() == "count" && funcCall.AggStar) {
 		return fmt.Errorf("converted sql is not a count(*) select statement. sql: %v", convertedSql)
 	}
 
@@ -1146,7 +1055,7 @@ func (i *driverImpl) convertSql(sql string) (string, int, error) {
 									{
 										Node: &parser.Node_String_{
 											String_: &parser.String{
-												Sval: "count"},
+												Str: "count"},
 										},
 									},
 								},
@@ -1454,4 +1363,14 @@ func (i *driverImpl) KillProcess(ctx context.Context) (*driverV2.KillProcessInfo
 	return &driverV2.KillProcessInfo{
 		ErrMessage: "",
 	}, nil
+}
+
+// getRuleDescI18n extracts Desc from I18nRuleInfo as i18nPkg.I18nStr.
+// This is a temporary helper until proper i18n is implemented.
+func getRuleDescI18n(rule *driverV2.Rule) i18nPkg.I18nStr {
+	descI18n := make(i18nPkg.I18nStr)
+	for langTag, info := range rule.I18nRuleInfo {
+		descI18n[langTag] = info.Desc
+	}
+	return descI18n
 }

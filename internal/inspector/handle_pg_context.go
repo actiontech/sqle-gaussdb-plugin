@@ -2,10 +2,9 @@ package inspector
 
 import (
 	"fmt"
-	"strings"
-
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
 	"github.com/actiontech/sqle-pg-plugin/internal/utils"
+	parser "github.com/pganalyze/pg_query_go/v2"
+	"strings"
 )
 
 type HandlePgContext struct {
@@ -116,7 +115,7 @@ func (h *HandlePgContext) handleCreateTable(tableInfo *TableInfo, tableElts *[]*
 				hasPrimaryKey = true
 				keys := tableElt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					uniqueIndexColumnList = append(uniqueIndexColumnList, key.GetString_().GetSval())
+					uniqueIndexColumnList = append(uniqueIndexColumnList, key.GetString_().GetStr())
 				}
 			}
 			// 获取唯一索引
@@ -124,7 +123,7 @@ func (h *HandlePgContext) handleCreateTable(tableInfo *TableInfo, tableElts *[]*
 				columns := make([]string, 0)
 				keys := tableElt.GetConstraint().GetKeys()
 				for _, key := range keys {
-					columns = append(columns, key.GetString_().GetSval())
+					columns = append(columns, key.GetString_().GetStr())
 				}
 				indexInfoList = append(indexInfoList, &IndexInfo{
 					IndexName:  tableElt.GetConstraint().Conname,
@@ -144,25 +143,24 @@ func (h *HandlePgContext) handleCreateTable(tableInfo *TableInfo, tableElts *[]*
 		columnLength, columnPrecision := 0, 0
 		typMods := tableElt.GetColumnDef().GetTypeName().GetTypmods()
 		if typMods != nil {
-			columnLength = int(typMods[0].GetAConst().GetIval().GetIval())
+			columnLength = int(typMods[0].GetAConst().GetVal().GetInteger().GetIval())
 			if len(typMods) == 2 {
-				columnPrecision = int(typMods[1].GetAConst().GetIval().GetIval())
+				columnPrecision = int(typMods[1].GetAConst().GetVal().GetInteger().GetIval())
 			}
 		}
 		if tableElt.GetColumnDef() != nil {
 			columnType := ""
 			typeNames := tableElt.GetColumnDef().GetTypeName().GetNames()
 			if len(typeNames) == 1 {
-				columnType = typeNames[0].GetString_().GetSval()
+				columnType = typeNames[0].GetString_().GetStr()
 			} else if len(typeNames) == 2 {
-				columnType = typeNames[1].GetString_().GetSval()
+				columnType = typeNames[1].GetString_().GetStr()
 			}
 			columnInfoList = append(columnInfoList, &ColumnInfo{
 				ColumnName:      tableElt.GetColumnDef().Colname,
 				OwnerName:       tableInfo.OwnerName,
 				TableName:       tableInfo.TableName,
 				ColumnType:      columnType,
-				ColumnTypType:   "", // TODO
 				ColumnLength:    columnLength,
 				ColumnPrecision: columnPrecision,
 				IsNullable:      isNullable,
@@ -500,7 +498,7 @@ func createTableConstraints(def *parser.Node, h *HandlePgContext) (*ConstraintIn
 		def.GetConstraint().Contype == parser.ConstrType_CONSTR_UNIQUE {
 		keys := def.GetConstraint().GetKeys()
 		for _, key := range keys {
-			columns = append(columns, key.GetString_().GetSval())
+			columns = append(columns, key.GetString_().GetStr())
 		}
 	}
 	fkColumns, pkColumns := make([]string, 0), make([]string, 0)
@@ -508,11 +506,11 @@ func createTableConstraints(def *parser.Node, h *HandlePgContext) (*ConstraintIn
 	if def.GetConstraint().Contype == parser.ConstrType_CONSTR_FOREIGN {
 		fkAttrs := def.GetConstraint().GetFkAttrs()
 		for _, fkAttr := range fkAttrs {
-			fkColumns = append(fkColumns, fkAttr.GetString_().GetSval())
+			fkColumns = append(fkColumns, fkAttr.GetString_().GetStr())
 		}
 		pkAttrs := def.GetConstraint().GetPkAttrs()
 		for _, pkAttr := range pkAttrs {
-			pkColumns = append(pkColumns, pkAttr.GetString_().GetSval())
+			pkColumns = append(pkColumns, pkAttr.GetString_().GetStr())
 		}
 		ownerName = def.GetConstraint().GetPktable().GetSchemaname()
 		if len(ownerName) == 0 {
@@ -559,7 +557,7 @@ func dropStatement(stmt *parser.DropStmt, h *HandlePgContext) error {
 	case parser.ObjectType_OBJECT_SCHEMA:
 		objects := stmt.Objects
 		for _, object := range objects {
-			schemaName := object.GetString_().GetSval()
+			schemaName := object.GetString_().GetStr()
 			err := h.handleDropSchema(h.PgContext.CurrentDatabase, schemaName)
 			if err != nil {
 				return err
@@ -575,10 +573,10 @@ func dropStatement(stmt *parser.DropStmt, h *HandlePgContext) error {
 			items := object.GetList().GetItems()
 			if len(items) == 1 {
 				schemaName = h.PgContext.DatabaseInfo.CurrentSchema
-				tableName = items[0].GetString_().GetSval()
+				tableName = items[0].GetString_().GetStr()
 			} else if len(items) == 2 {
-				schemaName = items[0].GetString_().GetSval()
-				tableName = items[1].GetString_().GetSval()
+				schemaName = items[0].GetString_().GetStr()
+				tableName = items[1].GetString_().GetStr()
 			}
 			err := h.handleDropTable(schemaName, tableName)
 			if err != nil {
@@ -596,10 +594,10 @@ func dropStatement(stmt *parser.DropStmt, h *HandlePgContext) error {
 			items := object.GetList().GetItems()
 			if len(items) == 1 {
 				schemaName = h.PgContext.DatabaseInfo.CurrentSchema
-				indexName = items[0].GetString_().GetSval()
+				indexName = items[0].GetString_().GetStr()
 			} else if len(items) == 2 {
-				schemaName = items[0].GetString_().GetSval()
-				indexName = items[1].GetString_().GetSval()
+				schemaName = items[0].GetString_().GetStr()
+				indexName = items[1].GetString_().GetStr()
 			}
 			err := h.handleDropIndex(schemaName, indexName)
 			if err != nil {
@@ -815,16 +813,16 @@ func GetColumnInfo(ownerName, tableName string, columnDef *parser.ColumnDef) *Co
 	columnType := ""
 	typeNames := columnDef.TypeName.Names
 	if len(typeNames) == 1 {
-		columnType = typeNames[0].GetString_().GetSval()
+		columnType = typeNames[0].GetString_().GetStr()
 	} else if len(typeNames) == 2 {
-		columnType = typeNames[1].GetString_().GetSval()
+		columnType = typeNames[1].GetString_().GetStr()
 	}
 	columnLength, columnPrecision := 0, 0
 	typMods := columnDef.TypeName.Typmods
 	if typMods != nil {
-		columnLength = int(typMods[0].GetAConst().GetIval().GetIval())
+		columnLength = int(typMods[0].GetAConst().GetVal().GetInteger().GetIval())
 		if len(typMods) == 2 {
-			columnPrecision = int(typMods[1].GetAConst().GetIval().GetIval())
+			columnPrecision = int(typMods[1].GetAConst().GetVal().GetInteger().GetIval())
 		}
 	}
 	isNullable, isPrimaryColumn, isUnique := true, false, false
@@ -848,7 +846,6 @@ func GetColumnInfo(ownerName, tableName string, columnDef *parser.ColumnDef) *Co
 		OwnerName:       ownerName,
 		TableName:       tableName,
 		ColumnType:      columnType,
-		ColumnTypType:   "", // TODO
 		ColumnLength:    columnLength,
 		ColumnPrecision: columnPrecision,
 		IsNullable:      isNullable,

@@ -1,7 +1,7 @@
 package parser
 
 import (
-	parser "actiontech.cloud/sqle/pg_query_go/v5"
+	parser "github.com/pganalyze/pg_query_go/v2"
 )
 
 func Fingerprint(oneSql string) (fingerprint string, err error) {

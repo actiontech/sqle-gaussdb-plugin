@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/actiontech/sqle/sqle/pkg/params"
+
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	"github.com/pkg/errors"
 )
@@ -12,8 +14,15 @@ type Dialector struct {
 	driverPkg.PostgresDialector
 }
 
-func (d *Dialector) String() string {
-	return "TBase"
+func (d *Dialector) DatabaseAdditionalParam() params.Params {
+	return params.Params{
+		&params.Param{
+			Key:   "default_schema",
+			Value: "public",
+			Desc:  "指定默认的 schema（默认为 public）",
+			Type:  params.ParamTypeString,
+		},
+	}
 }
 
 func (d *Dialector) ShowDatabaseSQL() string {
