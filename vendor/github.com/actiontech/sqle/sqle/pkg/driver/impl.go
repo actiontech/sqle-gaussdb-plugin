@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/actiontech/sqle/sqle/driver/mysql/util"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	"github.com/actiontech/sqle/sqle/pkg/params"
 	"github.com/actiontech/sqle/sqle/utils"
 	hclog "github.com/hashicorp/go-hclog"
 
-	"github.com/percona/go-mysql/query"
 	"github.com/pkg/errors"
 	"vitess.io/vitess/go/vt/sqlparser"
 )
@@ -44,6 +44,14 @@ func NewDriverImpl(l hclog.Logger, dt Dialector, ah *AuditHandler, cfg *driverV2
 	di.DB = db     // will be closed by DriverImpl.Close
 	di.Conn = conn // will be closed by DriverImpl.Close
 	return di, nil
+}
+
+func (p *DriverImpl) Backup(ctx context.Context, req *driverV2.BackupReq) (*driverV2.BackupRes, error) {
+	return nil, nil
+}
+
+func (p *DriverImpl) RecommendBackupStrategy(ctx context.Context, req *driverV2.RecommendBackupStrategyReq) (*driverV2.RecommendBackupStrategyRes, error) {
+	return nil, nil
 }
 
 func (p *DriverImpl) GetConn() (*sql.Conn, error) {
@@ -93,7 +101,7 @@ func (p *DriverImpl) ExecBatch(ctx context.Context, sqls ...string) ([]_driver.R
 	return nil, fmt.Errorf("unimplemented this method")
 }
 
-func (p *DriverImpl) Tx(ctx context.Context, sqls ...string) ([]_driver.Result, error) {
+func (p *DriverImpl) Tx(ctx context.Context, sqls ...string) (*driverV2.TxResponse, error) {
 	var (
 		err error
 		tx  *sql.Tx
@@ -121,14 +129,20 @@ func (p *DriverImpl) Tx(ctx context.Context, sqls ...string) ([]_driver.Result, 
 		}
 	}()
 
-	results := make([]_driver.Result, 0, len(sqls))
-	for _, sql := range sqls {
+	results := &driverV2.TxResponse{
+		ExecResult: make([]_driver.Result, 0, len(sqls)),
+	}
+	for k, sql := range sqls {
 		result, e := tx.ExecContext(ctx, sql)
 		if e != nil {
-			err = errors.Wrap(e, "exec sql in driver adaptor")
-			return nil, err
+			// SQL执行报错记录序号和错误信息在业务结构中
+			results.ExecErr = &driverV2.ExecErr{
+				ErrSqlIndex:   uint32(k),
+				SqlExecErrMsg: errors.Wrap(e, "exec sql in driver adaptor").Error(),
+			}
+			return results, nil
 		}
-		results = append(results, result)
+		results.ExecResult = append(results.ExecResult, result)
 	}
 
 	return results, nil
@@ -200,10 +214,14 @@ func (p *DriverImpl) Parse(ctx context.Context, sql string) ([]driverV2.Node, er
 
 	nodes := make([]driverV2.Node, 0, len(sqls))
 	for _, sql := range sqls {
+		fp, err := util.Fingerprint(sql, true)
+		if err != nil {
+			return nil, errors.Wrapf(err, "fingerprint of sql: %s", sql)
+		}
 		n := driverV2.Node{
 			Text:        sql,
 			Type:        classifySQL(sql),
-			Fingerprint: query.Fingerprint(sql),
+			Fingerprint: fp,
 		}
 		nodes = append(nodes, n)
 	}
@@ -284,4 +302,16 @@ func (p *DriverImpl) EstimateSQLAffectRows(ctx context.Context, sql string) (*dr
 
 func (p *DriverImpl) KillProcess(ctx context.Context) (*driverV2.KillProcessInfo, error) {
 	return &driverV2.KillProcessInfo{}, nil
+}
+
+func (p *DriverImpl) GetDatabaseObjectDDL(ctx context.Context, objInfos []*driverV2.DatabaseSchemaInfo) ([]*driverV2.DatabaseSchemaObjectResult, error) {
+	return []*driverV2.DatabaseSchemaObjectResult{}, nil
+}
+
+func (p *DriverImpl) GetDatabaseDiffModifySQL(ctx context.Context, calibratedDSN *driverV2.DSN, objInfos []*driverV2.DatabasCompareSchemaInfo) ([]*driverV2.DatabaseDiffModifySQLResult, error) {
+	return []*driverV2.DatabaseDiffModifySQLResult{}, nil
+}
+
+func (p *DriverImpl) GetSelectivityOfSQLColumns(ctx context.Context, sql string) (map[string]map[string]float32, error) {
+	return nil, nil
 }

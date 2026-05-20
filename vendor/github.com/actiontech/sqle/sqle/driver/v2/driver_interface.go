@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/actiontech/dms/pkg/dms-common/i18nPkg"
 	"github.com/actiontech/sqle/sqle/driver/common"
 	protoV2 "github.com/actiontech/sqle/sqle/driver/v2/proto"
 	"github.com/actiontech/sqle/sqle/pkg/params"
+	"golang.org/x/text/language"
 
 	goPlugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -80,7 +82,10 @@ type Driver interface {
 	Ping(ctx context.Context) error
 	Exec(ctx context.Context, sql string) (sqlDriver.Result, error)
 	ExecBatch(ctx context.Context, sqls ...string) ([]sqlDriver.Result, error)
-	Tx(ctx context.Context, sqls ...string) ([]sqlDriver.Result, error)
+
+	// Tx execute sqls in transaction.
+	// When just a sql execute failed, ErrSqlIndex of TxResponse.ExecErr should be set.
+	Tx(ctx context.Context, sqls ...string) (*TxResponse, error)
 	Query(ctx context.Context, sql string, conf *QueryConf) (*QueryResult, error)
 	Explain(ctx context.Context, conf *ExplainConf) (*ExplainResult, error)
 
@@ -89,6 +94,41 @@ type Driver interface {
 	ExtractTableFromSQL(ctx context.Context, sql string) ([]*Table, error)
 	EstimateSQLAffectRows(ctx context.Context, sql string) (*EstimatedAffectRows, error)
 	KillProcess(ctx context.Context) (*KillProcessInfo, error)
+	GetDatabaseObjectDDL(ctx context.Context, objInfos []*DatabaseSchemaInfo) ([]*DatabaseSchemaObjectResult, error)
+	GetDatabaseDiffModifySQL(ctx context.Context, calibratedDSN *DSN, objInfos []*DatabasCompareSchemaInfo) ([]*DatabaseDiffModifySQLResult, error)
+
+	Backup(ctx context.Context, req *BackupReq) (*BackupRes, error)
+	RecommendBackupStrategy(ctx context.Context, req *RecommendBackupStrategyReq) (*RecommendBackupStrategyRes, error)
+	GetSelectivityOfSQLColumns(ctx context.Context, sql string) (map[string] /*table name*/ map[string] /*column name*/ float32, error)
+}
+
+const (
+	BackupStrategyNone        string = "none"         // 不备份(不支持备份、无需备份、选择不备份)
+	BackupStrategyReverseSql  string = "reverse_sql"  // 备份为反向SQL
+	BackupStrategyOriginalRow string = "original_row" // 备份为原始行
+	BackupStrategyManually    string = "manual"       // 标记为人工备份
+)
+
+type BackupReq struct {
+	BackupStrategy string
+	Sql            string
+	BackupMaxRows  uint64
+}
+
+type BackupRes struct {
+	BackupSql     []string
+	ExecuteResult string
+}
+
+type RecommendBackupStrategyReq struct {
+	Sql string
+}
+
+type RecommendBackupStrategyRes struct {
+	BackupStrategy    string
+	BackupStrategyTip string
+	TablesRefer       []string
+	SchemasRefer      []string
 }
 
 type Node struct {
@@ -148,11 +188,15 @@ type AuditResults struct {
 }
 
 type AuditResult struct {
-	Level           RuleLevel
-	Message         string
-	RuleName        string
-	ExecutionFailed bool
-	ErrorInfo       string
+	Level               RuleLevel
+	RuleName            string
+	ExecutionFailed     bool
+	I18nAuditResultInfo map[language.Tag]AuditResultInfo
+}
+
+type AuditResultInfo struct {
+	Message   string
+	ErrorInfo string
 }
 
 func NewAuditResults() *AuditResults {
@@ -165,6 +209,9 @@ func NewAuditResults() *AuditResults {
 func (rs *AuditResults) Level() RuleLevel {
 	level := RuleLevelNull
 	for _, curr := range rs.Results {
+		if curr.ExecutionFailed {
+			continue
+		}
 		if ruleLevelMap[curr.Level] > ruleLevelMap[level] {
 			level = curr.Level
 		}
@@ -176,7 +223,7 @@ func (rs *AuditResults) Message() string {
 	repeatCheck := map[string]struct{}{}
 	messages := []string{}
 	for _, result := range rs.Results {
-		token := result.Message + string(result.Level)
+		token := result.I18nAuditResultInfo[i18nPkg.DefaultLang].Message + string(result.Level)
 		if _, ok := repeatCheck[token]; ok {
 			continue
 		}
@@ -185,37 +232,64 @@ func (rs *AuditResults) Message() string {
 		var message string
 		match, _ := regexp.MatchString(fmt.Sprintf(`^\[%s|%s|%s|%s|%s\]`,
 			RuleLevelError, RuleLevelWarn, RuleLevelNotice, RuleLevelNormal, "osc"),
-			result.Message)
+			result.I18nAuditResultInfo[i18nPkg.DefaultLang].Message)
 		if match {
-			message = result.Message
+			message = result.I18nAuditResultInfo[i18nPkg.DefaultLang].Message
 		} else {
-			message = fmt.Sprintf("[%s]%s", result.Level, result.Message)
+			message = fmt.Sprintf("[%s]%s", result.Level, result.I18nAuditResultInfo[i18nPkg.DefaultLang].Message)
 		}
 		messages = append(messages, message)
 	}
 	return strings.Join(messages, "\n")
 }
 
-func (rs *AuditResults) Add(level RuleLevel, ruleName string, messagePattern string, args ...interface{}) {
-	rs.AddResultWithError(level, ruleName, "", false, messagePattern, args...)
+func (rs *AuditResults) Add(level RuleLevel, ruleName string, i18nMsgPattern i18nPkg.I18nStr, args ...interface{}) {
+	rs.AddResultWithError(level, ruleName, "", false, i18nMsgPattern, args...)
 }
 
-func (rs *AuditResults) AddResultWithError(level RuleLevel, ruleName, errorMsg string, executionFailed bool, messagePattern string, args ...interface{}) {
-	if level == "" || messagePattern == "" {
+func (rs *AuditResults) AddResultWithError(level RuleLevel, ruleName, errorMsg string, executionFailed bool, i18nMsgPattern i18nPkg.I18nStr, args ...interface{}) {
+	if level == "" || len(i18nMsgPattern) == 0 {
 		return
 	}
-	message := messagePattern
-	if len(args) > 0 {
-		message = fmt.Sprintf(message, args...)
+
+	defer rs.SortByLevel()
+
+	if ruleName != "" {
+		for _, v := range rs.Results {
+			// 审核结果规则存在则更新
+			if v.RuleName == ruleName {
+				v.Level = level
+				for langTag, msg := range i18nMsgPattern {
+					if len(args) > 0 {
+						msg = fmt.Sprintf(msg, args...)
+					}
+					v.I18nAuditResultInfo[langTag] = AuditResultInfo{
+						Message:   msg,
+						ErrorInfo: errorMsg,
+					}
+				}
+				return
+			}
+		}
 	}
-	rs.Results = append(rs.Results, &AuditResult{
-		Level:           level,
-		Message:         message,
-		RuleName:        ruleName,
-		ExecutionFailed: executionFailed,
-		ErrorInfo:       errorMsg,
-	})
-	rs.SortByLevel()
+
+	ar := &AuditResult{
+		Level:               level,
+		RuleName:            ruleName,
+		ExecutionFailed:     executionFailed,
+		I18nAuditResultInfo: make(map[language.Tag]AuditResultInfo, len(i18nMsgPattern)),
+	}
+	for langTag, msg := range i18nMsgPattern {
+		if len(args) > 0 {
+			msg = fmt.Sprintf(msg, args...)
+		}
+		ari := AuditResultInfo{
+			Message:   msg,
+			ErrorInfo: errorMsg,
+		}
+		ar.I18nAuditResultInfo[langTag] = ari
+	}
+	rs.Results = append(rs.Results, ar)
 }
 
 func (rs *AuditResults) SortByLevel() {
@@ -256,8 +330,8 @@ type QueryResultValue struct {
 	| Rows[1][0] | Rows[1][1] | Rows[1][2] |
 */
 type TabularDataHead struct {
-	Name string
-	Desc string
+	Name     string
+	I18nDesc i18nPkg.I18nStr
 }
 
 type TabularData struct {
@@ -268,6 +342,43 @@ type TabularData struct {
 type ExplainConf struct {
 	// this SQL should be a single SQL
 	Sql string
+}
+
+// ExplainJSONResult QueryBlock CostInfo ExplainTable CostInfoTable Explain JSON FORMAT的结果集
+type ExplainJSONResult struct {
+	QueryBlock QueryBlock `json:"query_block"`
+}
+
+type QueryBlock struct {
+	SelectID int          `json:"select_id"`
+	CostInfo CostInfo     `json:"cost_info"`
+	Table    ExplainTable `json:"table"`
+}
+
+type CostInfo struct {
+	QueryCost string `json:"query_cost"`
+}
+
+type ExplainTable struct {
+	TableName           string   `json:"table_name"`
+	AccessType          string   `json:"access_type"`
+	PossibleKeys        []string `json:"possible_keys"`
+	Key                 string   `json:"key"`
+	UsedKeyParts        []string `json:"used_key_parts"`
+	KeyLength           string   `json:"key_length"`
+	Ref                 []string `json:"ref"`
+	RowsExaminedPerScan int      `json:"rows_examined_per_scan"`
+	RowsProducedPerJoin int      `json:"rows_produced_per_join"`
+	Filtered            string   `json:"filtered"`
+	CostInfo            CostInfo `json:"cost_info"`
+	UsedColumns         []string `json:"used_columns"`
+}
+
+type CostInfoTable struct {
+	ReadCost        string `json:"read_cost"`
+	EvalCost        string `json:"eval_cost"`
+	PrefixCost      string `json:"prefix_cost"`
+	DataReadPerJoin string `json:"data_read_per_join"`
 }
 
 type ExplainClassicResult struct {
@@ -315,4 +426,57 @@ func NewKillProcessInfo(errorMessage string) *KillProcessInfo {
 
 type RuleKnowledge struct {
 	Content string
+}
+
+type DatabaseSchemaInfo struct {
+	SchemaName      string
+	DatabaseObjects []*DatabaseObject
+}
+
+type DatabasCompareSchemaInfo struct {
+	BaseSchemaName     string
+	ComparedSchemaName string
+	DatabaseObjects    []*DatabaseObject
+}
+
+const (
+	ObjectType_TABLE     string = "TABLE"
+	ObjectType_VIEW      string = "VIEW"
+	ObjectType_PROCEDURE string = "PROCEDURE"
+	ObjectType_TRIGGER   string = "TRIGGER"
+	ObjectType_EVENT     string = "EVENT"
+	ObjectType_FUNCTION  string = "FUNCTION"
+)
+
+type DatabaseObject struct {
+	ObjectName string
+	ObjectType string
+}
+type DatabaseSchemaObjectResult struct {
+	SchemaName         string
+	SchemaDDL          string
+	DatabaseObjectDDLs []*DatabaseObjectDDL
+}
+type DatabaseObjectDDL struct {
+	DatabaseObject *DatabaseObject
+	ObjectDDL      string
+}
+
+type DatabaseDiffModifySQLResult struct {
+	SchemaName string
+	ModifySQLs []string
+}
+
+type TxResponse struct {
+	// ExecResult indicates the result of successfully executed SQLs.
+	ExecResult []sqlDriver.Result
+	// ExecErr indicates the error when executing SQL.
+	ExecErr *ExecErr
+}
+
+type ExecErr struct {
+	// ErrSqlIndex indicates the index of the SQL that failed to execute.
+	ErrSqlIndex uint32
+	// SqlExecErrMsg indicates the error message when executing SQL.
+	SqlExecErrMsg string
 }

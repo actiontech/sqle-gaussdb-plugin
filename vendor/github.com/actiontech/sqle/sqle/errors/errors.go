@@ -45,12 +45,14 @@ const (
 
 	SQLOptimizationCommunityNotSupported = 8004
 
+	SQLVersionNotAllTasksExecutedSuccess = 8005
+
 	// 需要隐藏所有错误细节或不确定时使用
 	GenericError ErrorCode = 9999
 )
 
 var (
-	ErrSQLTypeConflict = New(-1, fmt.Errorf("不能同时提交 DDL 和 DML 语句"))
+	ErrSQLTypeConflict = New(-1, fmt.Errorf("cannot submit both DDL and DML statements simultaneously"))
 )
 
 type CodeError struct {
@@ -118,7 +120,7 @@ func NewAccessDeniedErr(format string, a ...interface{}) error {
 }
 
 func NewUserNotPermissionError(op string) error {
-	return New(UserNotPermission, fmt.Errorf("当前用户没有 %v 的权限, 无法执行此操作", op))
+	return New(UserNotPermission, fmt.Errorf("the current user does not have permission for %v to perform this operation", op))
 }
 
 func NewAuditPlanNotExistErr() error {
@@ -151,4 +153,12 @@ func NewInstanceNoExistErr() error {
 
 func NewNotSupportGetSqlFileOrderMethodErr() error {
 	return New(EnterpriseEditionFeatures, fmt.Errorf("get sql file order method is enterprise version function"))
+}
+
+func NewNotSupportBackupErr() error {
+	return New(EnterpriseEditionFeatures, fmt.Errorf("backup and recovery is enterprise version function"))
+}
+
+func NewAuditPlanExecuteExtractErr(err error, instanceID string, auditPlan string) error {
+	return New(DataInvalid, fmt.Errorf("execute extract sql failed, instance[%s], audit plan[%s], err: %v", instanceID, auditPlan, err))
 }

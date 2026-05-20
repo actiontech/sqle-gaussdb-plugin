@@ -4,14 +4,16 @@ import (
 	"context"
 	"os"
 
+	"github.com/actiontech/dms/pkg/dms-common/i18nPkg"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
+	"golang.org/x/text/language"
 )
 
-type RawSQLRuleHandler func(ctx context.Context, rule *driverV2.Rule, rawSQL string, nextSQL []string) (string, error)
+type RawSQLRuleHandler func(ctx context.Context, rule *driverV2.Rule, rawSQL string, nextSQL []string) (i18nPkg.I18nStr, error)
 
-type AstSQLRuleHandler func(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (string, error)
+type AstSQLRuleHandler func(ctx context.Context, rule *driverV2.Rule, astSQL interface{}, nextSQL []string) (i18nPkg.I18nStr, error)
 
 type AuditHandler struct {
 	SqlParserFn      func(string) (interface{}, error)
@@ -20,8 +22,10 @@ type AuditHandler struct {
 }
 
 func (a *AuditHandler) Audit(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (*driverV2.AuditResult, error) {
-	result := &driverV2.AuditResult{}
-	message := ""
+	result := &driverV2.AuditResult{
+		I18nAuditResultInfo: make(map[language.Tag]driverV2.AuditResultInfo),
+	}
+	message := i18nPkg.I18nStr{}
 	var err error
 
 	handler, ok := a.RuleToRawHandler[rule.Name]
@@ -46,10 +50,14 @@ func (a *AuditHandler) Audit(ctx context.Context, rule *driverV2.Rule, sql strin
 			}
 		}
 	}
-	if message != "" {
+	if len(message) != 0 {
 		result.Level = rule.Level
-		result.Message = message
 		result.RuleName = rule.Name
+	}
+	for langTag, langMsg := range message {
+		result.I18nAuditResultInfo[langTag] = driverV2.AuditResultInfo{
+			Message: langMsg,
+		}
 	}
 	return result, nil
 }

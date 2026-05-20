@@ -44,9 +44,11 @@ import (
 // empty messages in your APIs. A typical example is to use it as the request
 // or the response type of an API method. For instance:
 //
-//	service Foo {
-//	  rpc Bar(google.protobuf.Empty) returns (google.protobuf.Empty);
-//	}
+//     service Foo {
+//       rpc Bar(google.protobuf.Empty) returns (google.protobuf.Empty);
+//     }
+//
+// The JSON representation for `Empty` is empty JSON object `{}`.
 type Empty struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -115,7 +117,7 @@ func file_google_protobuf_empty_proto_rawDescGZIP() []byte {
 }
 
 var file_google_protobuf_empty_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_google_protobuf_empty_proto_goTypes = []any{
+var file_google_protobuf_empty_proto_goTypes = []interface{}{
 	(*Empty)(nil), // 0: google.protobuf.Empty
 }
 var file_google_protobuf_empty_proto_depIdxs = []int32{
@@ -132,7 +134,7 @@ func file_google_protobuf_empty_proto_init() {
 		return
 	}
 	if !protoimpl.UnsafeEnabled {
-		file_google_protobuf_empty_proto_msgTypes[0].Exporter = func(v any, i int) any {
+		file_google_protobuf_empty_proto_msgTypes[0].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Empty); i {
 			case 0:
 				return &v.state

@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +23,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/actiontech/sqle/sqle/log"
 	"github.com/bwmarrin/snowflake"
@@ -83,6 +89,33 @@ func RemoveDuplicate(c []string) []string {
 			result = append(result, v)
 		}
 	}
+	return result
+}
+
+func MergeAndDeduplicateSort(arr1, arr2 []string) []string {
+	// 合并两个数组
+	merged := append(arr1, arr2...)
+
+	// 如果合并后的数组是空的，直接返回空切片
+	if len(merged) == 0 {
+		return []string{}
+	}
+
+	// 使用map去重
+	seen := make(map[string]struct{})
+	// 预分配足够的空间，避免多次内存分配
+	result := make([]string, 0, len(merged))
+
+	for _, str := range merged {
+		if _, exists := seen[str]; !exists {
+			seen[str] = struct{}{}
+			result = append(result, str)
+		}
+	}
+
+	// 排序
+	sort.Strings(result)
+
 	return result
 }
 
@@ -406,4 +439,169 @@ func TruncateAndMarkForExcelCell(s string) string {
 		return truncated + " ..."
 	}
 	return s
+}
+
+func IntersectionStringSlice(slice1, slice2 []string) []string {
+	// 用 map 来存储第一个切片的元素
+	elemMap := make(map[string]bool)
+	for _, v := range slice1 {
+		elemMap[v] = true
+	}
+
+	// 遍历第二个切片，找到交集
+	var intersection []string
+	for _, v := range slice2 {
+		if elemMap[v] {
+			intersection = append(intersection, v)
+			// 删除元素以防重复添加
+			delete(elemMap, v)
+		}
+	}
+	return intersection
+}
+func GeneratePublicKeyFromPrivateKey(privateKey *rsa.PrivateKey) (string, error) {
+	publicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	return string(ssh.MarshalAuthorizedKey(publicKey)), nil
+}
+
+func GenerateSSHKeyPair() (privateKeyStr, publicKeyStr string, err error) {
+	// 1. 生成 4096-bit RSA 私钥
+	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 2. 编码私钥为 PEM 格式，与ssh-keygen -N "" 生成的格式保持一致（无密码保护）
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	privatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	})
+
+	// 3. 生成 SSH 公钥，格式：ssh-rsa AAAA...
+	publicKeyStr, err = GeneratePublicKeyFromPrivateKey(privateKey)
+	if err != nil {
+		return "", "", err
+	}
+
+	return string(privatePEM), publicKeyStr, nil
+}
+
+// CompareNatural 实现自然排序比较，数字按数值大小比较，非数字按字典序比较
+// 例如："file2.sql" 会排在 "file11.sql" 前面
+// 返回值：如果 a < b 返回 true，否则返回 false
+func CompareNatural(a, b string) bool {
+	aRunes := []rune(a)
+	bRunes := []rune(b)
+	
+	aLen := len(aRunes)
+	bLen := len(bRunes)
+	
+	i, j := 0, 0
+	
+	for i < aLen && j < bLen {
+		// 跳过前导空格
+		for i < aLen && unicode.IsSpace(aRunes[i]) {
+			i++
+		}
+		for j < bLen && unicode.IsSpace(bRunes[j]) {
+			j++
+		}
+		
+		if i >= aLen || j >= bLen {
+			break
+		}
+		
+		// 检查当前位置是否为数字
+		aIsDigit := unicode.IsDigit(aRunes[i])
+		bIsDigit := unicode.IsDigit(bRunes[j])
+		
+		if aIsDigit && bIsDigit {
+			// 两者都是数字，提取完整的数字进行比较
+			aNumStart := i
+			bNumStart := j
+			
+			// 提取 a 的数字部分
+			for i < aLen && unicode.IsDigit(aRunes[i]) {
+				i++
+			}
+			// 提取 b 的数字部分
+			for j < bLen && unicode.IsDigit(bRunes[j]) {
+				j++
+			}
+			
+			// 将数字字符串转换为整数进行比较
+			aNumStr := string(aRunes[aNumStart:i])
+			bNumStr := string(bRunes[bNumStart:j])
+			
+			aNum, err1 := strconv.Atoi(aNumStr)
+			bNum, err2 := strconv.Atoi(bNumStr)
+			
+			// 如果转换失败，按字符串比较
+			if err1 != nil || err2 != nil {
+				if aNumStr < bNumStr {
+					return true
+				}
+				if aNumStr > bNumStr {
+					return false
+				}
+				continue
+			}
+			
+			// 按数值比较
+			if aNum < bNum {
+				return true
+			}
+			if aNum > bNum {
+				return false
+			}
+			// 数值相等，但字符串可能不同（如 "02" vs "2"），按字符串比较以保持稳定性
+			if aNumStr < bNumStr {
+				return true
+			}
+			if aNumStr > bNumStr {
+				return false
+			}
+			// 数值和字符串都相等，继续比较下一部分
+			continue
+		}
+		
+		// 至少有一个不是数字，按字符比较
+		if aRunes[i] < bRunes[j] {
+			return true
+		}
+		if aRunes[i] > bRunes[j] {
+			return false
+		}
+		
+		i++
+		j++
+	}
+	
+	// 一个字符串已经比较完，较短的排在前面
+	return aLen < bLen
+}
+
+func FindIntersection(slice1, slice2 []string) []string {
+	map1 := make(map[string]bool)
+	map2 := make(map[string]bool)
+
+	// 填充第一个 map
+	for _, item := range slice1 {
+		map1[item] = true
+	}
+
+	// 填充第二个 map 并查找交集
+	var intersection []string
+	for _, item := range slice2 {
+		if map1[item] && !map2[item] {
+			intersection = append(intersection, item)
+		}
+		map2[item] = true
+	}
+
+	return intersection
 }
