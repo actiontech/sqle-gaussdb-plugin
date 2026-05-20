@@ -1,0 +1,12 @@
+package inspector
+
+import (
+	"testing"
+)
+
+// ==== Rule test code start ====
+func TestRuleSQLE{{ rule_id }}(t *testing.T) {
+
+}
+
+// ==== Rule test code end ====

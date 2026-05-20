@@ -1,0 +1,32 @@
+package inspector
+
+import (
+	"context"
+	"fmt"
+
+	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
+    "github.com/actiontech/sqle/sqle/pkg/params"
+    parser "actiontech.cloud/sqle/pg_query_go/v5"
+	"github.com/pkg/errors"
+)
+
+const (
+	SQLE{{ rule_id }} = "SQLE{{ rule_id }}"
+)
+
+{{ init_func }}
+
+/*
+==== Prompt start ====
+在 TBase(PostgreSQL的分布式版本) 中，您应该检查 SQL 是否违反了规则(SQLE{{ rule_id }}): "{{ title }}.{{params}}"
+您应遵循以下逻辑：
+{{ check_logic }}
+==== Prompt end ====
+*/
+
+// ==== Rule code start ====
+func RuleSQLE{{ rule_id }}(ctx context.Context, rule *driverV2.Rule, sql string, nextSQL []string) (string, error) {
+	return "", fmt.Errorf("RuleSQLE{{ rule_id }} not implemented")
+}
+
+// ==== Rule code end ====
