@@ -43,9 +43,10 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
+require github.com/DATA-DOG/go-sqlmock v1.5.0
+
 require (
 	github.com/360EntSecGroup-Skylar/excelize v1.4.1 // indirect
-	github.com/DATA-DOG/go-sqlmock v1.5.0 // indirect
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
 	github.com/actiontech/dms v0.0.0-20260520024857-5bc318ea23da // indirect
 	github.com/bwmarrin/snowflake v0.3.0 // indirect
