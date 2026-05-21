@@ -676,3 +676,75 @@ func TestExtractProcedure_NoTupleWrapping(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", mockErr)
 	}
 }
+
+// TestExtractProcedure_TrimTrailingSlash 覆盖 Task-Test-Fix-002 P3：
+//
+// openGauss pg_get_functiondef 对 PROCEDURE 返回值末尾会带一行独立的 `/`
+// （PL/SQL 终止符），Go database/sql + openGauss-connector-go-pq 驱动不识别
+// `/` 作为语句终止符，会撞 `syntax error at or near "/"`。extractor 层必须
+// 剥除该末尾独立行 `/`（保留中间内嵌内容），让下游 modify_sql_statements 输出
+// 能在 Go/JDBC 驱动里直接 EXEC_OK（case-3-4.md / semantic
+// opengauss_procedure_slash_terminator_driver_incompat_20260521.md 缺陷溯源）。
+func TestExtractProcedure_TrimTrailingSlash(t *testing.T) {
+	cases := map[string]struct {
+		raw  string
+		want string
+	}{
+		"slash_with_trailing_newline": {
+			raw: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;\n" +
+				"/\n",
+			want: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;",
+		},
+		"slash_no_trailing_newline": {
+			raw: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;\n" +
+				"/",
+			want: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;",
+		},
+		"slash_with_extra_blank_line_before": {
+			raw: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;\n" +
+				"\n/\n",
+			want: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;",
+		},
+		"no_slash_unchanged": {
+			raw: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;",
+			want: "CREATE OR REPLACE PROCEDURE s.p()\n" +
+				"AS DECLARE BEGIN NULL; END;",
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			db, mock, cleanup := newMock(t)
+			defer cleanup()
+
+			expectProcDefsAndArgs(mock, "s", "p", [][2]string{
+				{c.raw, ""},
+			})
+
+			ex := NewExtractor(db)
+			results, err := ex.extractProcedure(context.Background(), "s", "p")
+			if err != nil {
+				t.Fatalf("extractProcedure: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("results len = %d, want 1", len(results))
+			}
+			if results[0].ObjectDDL != c.want {
+				t.Errorf("ObjectDDL mismatch:\n got: %q\nwant: %q", results[0].ObjectDDL, c.want)
+			}
+			if strings.HasSuffix(results[0].ObjectDDL, "/") {
+				t.Errorf("ObjectDDL still ends with `/`: %q", results[0].ObjectDDL)
+			}
+			if mockErr := mock.ExpectationsWereMet(); mockErr != nil {
+				t.Errorf("unmet sqlmock expectations: %v", mockErr)
+			}
+		})
+	}
+}
