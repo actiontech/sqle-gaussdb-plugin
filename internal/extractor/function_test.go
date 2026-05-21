@@ -6,6 +6,9 @@
 //     `funcname(arg_type_list)`，map key 天然唯一（design §6.4 + R-Q4-2）
 //   - PROCEDURE 重载（同上结构，prokind = 'p'）
 //   - 注入防御（FUNCTION + PROCEDURE 各 6 类输入串，与 table/view 注入测试对称）
+//   - Task-Test-Fix-001 P1.1：双列 SELECT 已拆成两次单列查询；单测同步
+//     更新为 mock 两条独立 query（extract*DefSQL → defs 列、extract*ArgsSQL →
+//     arguments 列），断言两次结果按 ORDER BY oid 顺序对齐。
 //
 // 所有 sqlmock 用 QueryMatcherOption(QueryMatcherEqual) 模式锁定 SQL 文本，
 // 避免正则模糊匹配掩盖 design 模板偏离；WithArgs 用原值锁定 Go 侧未 escape。
@@ -25,35 +28,67 @@ import (
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 )
 
+// expectFuncDefsAndArgs 是 FUNCTION 路径双查询的 mock helper，rows 形如
+// [{def0, args0}, {def1, args1}, ...]；defs 列 + args 列分别由两次 query 返回。
+func expectFuncDefsAndArgs(mock sqlmock.Sqlmock, schema, name string, rows [][2]string) {
+	defRows := sqlmock.NewRows([]string{"functiondef"})
+	argRows := sqlmock.NewRows([]string{"arguments"})
+	for _, r := range rows {
+		defRows.AddRow(r[0])
+		argRows.AddRow(r[1])
+	}
+	mock.ExpectQuery(extractFunctionDefSQL).
+		WithArgs(schema, name).
+		WillReturnRows(defRows)
+	mock.ExpectQuery(extractFunctionArgsSQL).
+		WithArgs(schema, name).
+		WillReturnRows(argRows)
+}
+
+// expectProcDefsAndArgs 是 PROCEDURE 路径双查询的 mock helper（结构同上）。
+func expectProcDefsAndArgs(mock sqlmock.Sqlmock, schema, name string, rows [][2]string) {
+	defRows := sqlmock.NewRows([]string{"procdef"})
+	argRows := sqlmock.NewRows([]string{"arguments"})
+	for _, r := range rows {
+		defRows.AddRow(r[0])
+		argRows.AddRow(r[1])
+	}
+	mock.ExpectQuery(extractProcedureDefSQL).
+		WithArgs(schema, name).
+		WillReturnRows(defRows)
+	mock.ExpectQuery(extractProcedureArgsSQL).
+		WithArgs(schema, name).
+		WillReturnRows(argRows)
+}
+
 // TestExtractor_Extract_FunctionAndProcedure 覆盖 Extract 入口的 FUNCTION /
 // PROCEDURE 分发 + 对象不存在占位 + 权限错误透传（design §6.2.3 / §6.2.4 /
 // §6.5）。
 func TestExtractor_Extract_FunctionAndProcedure(t *testing.T) {
 	const (
-		funcDDLSingleArg  = "CREATE OR REPLACE FUNCTION public.fn(p1 integer) RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p1; END $function$"
-		procDDLMultiArgs  = "CREATE OR REPLACE PROCEDURE public.proc(p1 integer, p2 text) LANGUAGE plpgsql AS $procedure$ BEGIN NULL; END $procedure$"
+		funcDDLSingleArg = "CREATE OR REPLACE FUNCTION public.fn(p1 integer) RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p1; END $function$"
+		procDDLMultiArgs = "CREATE OR REPLACE PROCEDURE public.proc(p1 integer, p2 text) LANGUAGE plpgsql AS $procedure$ BEGIN NULL; END $procedure$"
 	)
 
 	cases := map[string]struct {
-		schema        string
-		object        *driverV2.DatabaseObject
-		mockSetup     func(mock sqlmock.Sqlmock)
-		wantErr       bool
-		wantErrPart   string
-		wantLen       int
-		wantObjName   string
-		wantObjType   string
-		wantDDL       string
-		wantDDLEmpty  bool
+		schema       string
+		object       *driverV2.DatabaseObject
+		mockSetup    func(mock sqlmock.Sqlmock)
+		wantErr      bool
+		wantErrPart  string
+		wantLen      int
+		wantObjName  string
+		wantObjType  string
+		wantDDL      string
+		wantDDLEmpty bool
 	}{
 		"function_normal_single_arg": {
 			schema: "public",
 			object: &driverV2.DatabaseObject{ObjectName: "fn", ObjectType: driverV2.ObjectType_FUNCTION},
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(extractFunctionSQL).
-					WithArgs("public", "fn").
-					WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}).
-						AddRow(funcDDLSingleArg, "integer"))
+				expectFuncDefsAndArgs(mock, "public", "fn", [][2]string{
+					{funcDDLSingleArg, "integer"},
+				})
 			},
 			wantLen:     1,
 			wantObjName: "fn(integer)",
@@ -64,10 +99,9 @@ func TestExtractor_Extract_FunctionAndProcedure(t *testing.T) {
 			schema: "public",
 			object: &driverV2.DatabaseObject{ObjectName: "proc", ObjectType: driverV2.ObjectType_PROCEDURE},
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(extractProcedureSQL).
-					WithArgs("public", "proc").
-					WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}).
-						AddRow(procDDLMultiArgs, "integer, text"))
+				expectProcDefsAndArgs(mock, "public", "proc", [][2]string{
+					{procDDLMultiArgs, "integer, text"},
+				})
 			},
 			wantLen:     1,
 			wantObjName: "proc(integer, text)",
@@ -78,10 +112,13 @@ func TestExtractor_Extract_FunctionAndProcedure(t *testing.T) {
 			schema: "public",
 			object: &driverV2.DatabaseObject{ObjectName: "missing_fn", ObjectType: driverV2.ObjectType_FUNCTION},
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// 返回空行集 → rows.Next() 立即 false，触发占位兜底。
-				mock.ExpectQuery(extractFunctionSQL).
+				// 两次 query 都返回空行集 → 触发占位兜底。
+				mock.ExpectQuery(extractFunctionDefSQL).
 					WithArgs("public", "missing_fn").
-					WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}))
+					WillReturnRows(sqlmock.NewRows([]string{"functiondef"}))
+				mock.ExpectQuery(extractFunctionArgsSQL).
+					WithArgs("public", "missing_fn").
+					WillReturnRows(sqlmock.NewRows([]string{"arguments"}))
 			},
 			wantLen:      1,
 			wantObjName:  "missing_fn", // 不带参数签名，与"该侧不存在"语义一致
@@ -92,9 +129,12 @@ func TestExtractor_Extract_FunctionAndProcedure(t *testing.T) {
 			schema: "public",
 			object: &driverV2.DatabaseObject{ObjectName: "missing_proc", ObjectType: driverV2.ObjectType_PROCEDURE},
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(extractProcedureSQL).
+				mock.ExpectQuery(extractProcedureDefSQL).
 					WithArgs("public", "missing_proc").
-					WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}))
+					WillReturnRows(sqlmock.NewRows([]string{"procdef"}))
+				mock.ExpectQuery(extractProcedureArgsSQL).
+					WithArgs("public", "missing_proc").
+					WillReturnRows(sqlmock.NewRows([]string{"arguments"}))
 			},
 			wantLen:      1,
 			wantObjName:  "missing_proc",
@@ -105,7 +145,8 @@ func TestExtractor_Extract_FunctionAndProcedure(t *testing.T) {
 			schema: "restricted",
 			object: &driverV2.DatabaseObject{ObjectName: "fn", ObjectType: driverV2.ObjectType_FUNCTION},
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(extractFunctionSQL).
+				// 第一条 defs query 失败即返回，不会再发起 args query。
+				mock.ExpectQuery(extractFunctionDefSQL).
 					WithArgs("restricted", "fn").
 					WillReturnError(errors.New("permission denied for schema pg_catalog"))
 			},
@@ -189,9 +230,9 @@ func TestExtractor_FunctionOverload(t *testing.T) {
 	cases := map[string]struct {
 		schema    string
 		funcName  string
-		mockRows  [][2]string // [functiondef, arguments] 序列
-		wantNames []string     // 期望的 ObjectName 集合（顺序无关）
-		wantDDLs  []string     // 期望的 DDL 集合（顺序无关）
+		mockRows  [][2]string // [functiondef, arguments] 序列；按 oid 顺序对齐
+		wantNames []string    // 期望的 ObjectName 集合（顺序无关）
+		wantDDLs  []string    // 期望的 DDL 集合（顺序无关）
 	}{
 		"function_no_arg": {
 			schema:   "public",
@@ -263,13 +304,7 @@ func TestExtractor_FunctionOverload(t *testing.T) {
 			db, mock, cleanup := newMock(t)
 			defer cleanup()
 
-			rows := sqlmock.NewRows([]string{"functiondef", "arguments"})
-			for _, r := range c.mockRows {
-				rows.AddRow(r[0], r[1])
-			}
-			mock.ExpectQuery(extractFunctionSQL).
-				WithArgs(c.schema, c.funcName).
-				WillReturnRows(rows)
+			expectFuncDefsAndArgs(mock, c.schema, c.funcName, c.mockRows)
 
 			ex := NewExtractor(db)
 			results, err := ex.extractFunction(context.Background(), c.schema, c.funcName)
@@ -280,8 +315,6 @@ func TestExtractor_FunctionOverload(t *testing.T) {
 				t.Fatalf("results len = %d, want %d", len(results), len(c.wantNames))
 			}
 
-			// ObjectName 集合断言（顺序无关——重载多行底层依赖
-			// pg_proc 索引扫描顺序，不假设固定顺序）。
 			gotNames := make([]string, 0, len(results))
 			gotDDLs := make([]string, 0, len(results))
 			gotTypes := make(map[string]bool)
@@ -310,8 +343,6 @@ func TestExtractor_FunctionOverload(t *testing.T) {
 				t.Errorf("ObjectType set = %v, want only {FUNCTION}", gotTypes)
 			}
 
-			// ObjectName 全部唯一是 design §6.4 + R-Q4-2 的核心契约：
-			// compareSchema 按 ObjectName 建 map 时不会丢失重载。
 			uniq := make(map[string]bool)
 			for _, n := range gotNames {
 				if uniq[n] {
@@ -391,13 +422,7 @@ func TestExtractor_ProcedureOverload(t *testing.T) {
 			db, mock, cleanup := newMock(t)
 			defer cleanup()
 
-			rows := sqlmock.NewRows([]string{"functiondef", "arguments"})
-			for _, r := range c.mockRows {
-				rows.AddRow(r[0], r[1])
-			}
-			mock.ExpectQuery(extractProcedureSQL).
-				WithArgs(c.schema, c.procName).
-				WillReturnRows(rows)
+			expectProcDefsAndArgs(mock, c.schema, c.procName, c.mockRows)
 
 			ex := NewExtractor(db)
 			results, err := ex.extractProcedure(context.Background(), c.schema, c.procName)
@@ -462,12 +487,12 @@ func TestExtractor_QuoteIdent_FunctionInjectionDefense(t *testing.T) {
 		schema   string
 		funcName string
 	}{
-		"space_in_schema":              {schema: "My Schema", funcName: "fn"},
-		"uppercase_schema":             {schema: "MySchema", funcName: "fn"},
-		"chinese_schema":               {schema: "中文模式", funcName: "fn"},
-		"sql_injection_in_func_name":   {schema: "public", funcName: "fn; DROP FUNCTION x; --"},
-		"single_quote_in_func_name":    {schema: "public", funcName: "it's_fn"},
-		"double_quote_in_func_name":    {schema: "public", funcName: `"quoted_fn"`},
+		"space_in_schema":            {schema: "My Schema", funcName: "fn"},
+		"uppercase_schema":           {schema: "MySchema", funcName: "fn"},
+		"chinese_schema":             {schema: "中文模式", funcName: "fn"},
+		"sql_injection_in_func_name": {schema: "public", funcName: "fn; DROP FUNCTION x; --"},
+		"single_quote_in_func_name":  {schema: "public", funcName: "it's_fn"},
+		"double_quote_in_func_name":  {schema: "public", funcName: `"quoted_fn"`},
 	}
 
 	const ddlEcho = "<echo-function>"
@@ -481,10 +506,9 @@ func TestExtractor_QuoteIdent_FunctionInjectionDefense(t *testing.T) {
 			// WithArgs(c.schema, c.funcName) 强约束：sqlmock 对每个 driver.Value
 			// 做 reflect.DeepEqual 比较；若 Extractor 在 Go 侧做任何 escape，
 			// 实参就会与原值不等，匹配失败导致测试 fail。
-			mock.ExpectQuery(extractFunctionSQL).
-				WithArgs(c.schema, c.funcName).
-				WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}).
-					AddRow(ddlEcho, "integer"))
+			expectFuncDefsAndArgs(mock, c.schema, c.funcName, [][2]string{
+				{ddlEcho, "integer"},
+			})
 
 			ex := NewExtractor(db)
 			result, err := ex.Extract(context.Background(), &driverV2.DatabaseSchemaInfo{
@@ -526,12 +550,12 @@ func TestExtractor_QuoteIdent_ProcedureInjectionDefense(t *testing.T) {
 		schema   string
 		procName string
 	}{
-		"space_in_schema":             {schema: "My Schema", procName: "proc"},
-		"uppercase_schema":            {schema: "MySchema", procName: "proc"},
-		"chinese_schema":              {schema: "中文模式", procName: "proc"},
-		"sql_injection_in_proc_name":  {schema: "public", procName: "proc; DROP PROCEDURE x; --"},
-		"single_quote_in_proc_name":   {schema: "public", procName: "it's_proc"},
-		"double_quote_in_proc_name":   {schema: "public", procName: `"quoted_proc"`},
+		"space_in_schema":            {schema: "My Schema", procName: "proc"},
+		"uppercase_schema":           {schema: "MySchema", procName: "proc"},
+		"chinese_schema":             {schema: "中文模式", procName: "proc"},
+		"sql_injection_in_proc_name": {schema: "public", procName: "proc; DROP PROCEDURE x; --"},
+		"single_quote_in_proc_name":  {schema: "public", procName: "it's_proc"},
+		"double_quote_in_proc_name":  {schema: "public", procName: `"quoted_proc"`},
 	}
 
 	const ddlEcho = "<echo-procedure>"
@@ -542,10 +566,9 @@ func TestExtractor_QuoteIdent_ProcedureInjectionDefense(t *testing.T) {
 			db, mock, cleanup := newMock(t)
 			defer cleanup()
 
-			mock.ExpectQuery(extractProcedureSQL).
-				WithArgs(c.schema, c.procName).
-				WillReturnRows(sqlmock.NewRows([]string{"functiondef", "arguments"}).
-					AddRow(ddlEcho, "integer"))
+			expectProcDefsAndArgs(mock, c.schema, c.procName, [][2]string{
+				{ddlEcho, "integer"},
+			})
 
 			ex := NewExtractor(db)
 			result, err := ex.Extract(context.Background(), &driverV2.DatabaseSchemaInfo{
@@ -575,5 +598,81 @@ func TestExtractor_QuoteIdent_ProcedureInjectionDefense(t *testing.T) {
 				t.Errorf("unmet sqlmock expectations: %v", mockErr)
 			}
 		})
+	}
+}
+
+// TestExtractFunction_NoTupleWrapping 是 Task-Test-Fix-001 P1.1 修复的回归
+// 验证：双列 SELECT 拆成两次单列查询后，extractor 不再在 ObjectDDL 中输出
+// `(N,"...")` 这种 Postgres tuple/record 字面值。
+//
+// 验证策略：mock 单列 SQL 返回纯 DDL 文本 → 断言 ObjectDDL 等于该原值（无
+// 前导 `(N,"` 与尾部 `")"`）。同时验证 ObjectName 拼接结果不含 tuple 字面值。
+func TestExtractFunction_NoTupleWrapping(t *testing.T) {
+	const rawDDL = "CREATE OR REPLACE FUNCTION test_2905_base.fn(p1 integer) RETURNS integer LANGUAGE plpgsql AS $$ BEGIN RETURN p1; END $$"
+
+	db, mock, cleanup := newMock(t)
+	defer cleanup()
+
+	expectFuncDefsAndArgs(mock, "test_2905_base", "fn", [][2]string{
+		{rawDDL, "integer"},
+	})
+
+	ex := NewExtractor(db)
+	results, err := ex.extractFunction(context.Background(), "test_2905_base", "fn")
+	if err != nil {
+		t.Fatalf("extractFunction: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	got := results[0]
+	if got.ObjectDDL != rawDDL {
+		t.Errorf("ObjectDDL = %q, want %q", got.ObjectDDL, rawDDL)
+	}
+	// 反向断言：tuple 字面值前缀 `(N,"` 不应出现。
+	if strings.HasPrefix(got.ObjectDDL, "(") && strings.Contains(got.ObjectDDL, `,"`) {
+		t.Errorf("ObjectDDL appears to be Postgres tuple literal: %q", got.ObjectDDL)
+	}
+	if got.DatabaseObject.ObjectName != "fn(integer)" {
+		t.Errorf("ObjectName = %q, want %q", got.DatabaseObject.ObjectName, "fn(integer)")
+	}
+	if mockErr := mock.ExpectationsWereMet(); mockErr != nil {
+		t.Errorf("unmet sqlmock expectations: %v", mockErr)
+	}
+}
+
+// TestExtractProcedure_NoTupleWrapping 同 TestExtractFunction_NoTupleWrapping，
+// 仅走 PROCEDURE 路径（case-2-4 报告的 (1,"CREATE OR REPLACE PROCEDURE ...")
+// 场景）。
+func TestExtractProcedure_NoTupleWrapping(t *testing.T) {
+	const rawDDL = "CREATE OR REPLACE PROCEDURE test_2905_compared.proc_log_action(p_action text) LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'action: %', p_action; END; $$"
+
+	db, mock, cleanup := newMock(t)
+	defer cleanup()
+
+	expectProcDefsAndArgs(mock, "test_2905_compared", "proc_log_action", [][2]string{
+		{rawDDL, "p_action text"},
+	})
+
+	ex := NewExtractor(db)
+	results, err := ex.extractProcedure(context.Background(), "test_2905_compared", "proc_log_action")
+	if err != nil {
+		t.Fatalf("extractProcedure: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	got := results[0]
+	if got.ObjectDDL != rawDDL {
+		t.Errorf("ObjectDDL = %q, want %q", got.ObjectDDL, rawDDL)
+	}
+	if strings.HasPrefix(got.ObjectDDL, "(") && strings.Contains(got.ObjectDDL, `,"`) {
+		t.Errorf("ObjectDDL appears to be Postgres tuple literal: %q", got.ObjectDDL)
+	}
+	if got.DatabaseObject.ObjectName != "proc_log_action(p_action text)" {
+		t.Errorf("ObjectName = %q, want %q", got.DatabaseObject.ObjectName, "proc_log_action(p_action text)")
+	}
+	if mockErr := mock.ExpectationsWereMet(); mockErr != nil {
+		t.Errorf("unmet sqlmock expectations: %v", mockErr)
 	}
 }
