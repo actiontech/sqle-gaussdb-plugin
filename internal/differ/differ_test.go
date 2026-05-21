@@ -575,3 +575,122 @@ func TestDiffer_NilAndEmptyDefensive(t *testing.T) {
 		})
 	}
 }
+
+// ---- i) TestDiffer_RewriteSchemaQualifier (Task-Test-Fix-001 P1.2) ----
+
+// TestRewriteSchemaQualifier 直接断言 helper：baseSchema. 前缀被替换为
+// comparedSchema.；自对比与空 baseSchema 走 no-op。
+func TestRewriteSchemaQualifier(t *testing.T) {
+	cases := map[string]struct {
+		ddl, base, compared, want string
+	}{
+		"view_create_or_replace_qualified": {
+			ddl:      "CREATE OR REPLACE VIEW test_2905_base.v_user_summary AS SELECT id FROM test_2905_base.t_user;",
+			base:     "test_2905_base",
+			compared: "test_2905_compared",
+			want:     "CREATE OR REPLACE VIEW test_2905_compared.v_user_summary AS SELECT id FROM test_2905_compared.t_user;",
+		},
+		"function_qualified": {
+			ddl:      "CREATE OR REPLACE FUNCTION test_2905_base.fn(integer) RETURNS int AS $$ SELECT 1 $$ LANGUAGE SQL;",
+			base:     "test_2905_base",
+			compared: "test_2905_compared",
+			want:     "CREATE OR REPLACE FUNCTION test_2905_compared.fn(integer) RETURNS int AS $$ SELECT 1 $$ LANGUAGE SQL;",
+		},
+		"self_compare_noop": {
+			ddl:      "CREATE OR REPLACE VIEW public.v AS SELECT 1;",
+			base:     "public",
+			compared: "public",
+			want:     "CREATE OR REPLACE VIEW public.v AS SELECT 1;",
+		},
+		"empty_base_schema_noop": {
+			ddl:      "CREATE TABLE x;",
+			base:     "",
+			compared: "compared",
+			want:     "CREATE TABLE x;",
+		},
+		"no_match_noop": {
+			ddl:      "CREATE OR REPLACE VIEW public.v AS SELECT 1;",
+			base:     "other_schema",
+			compared: "compared_schema",
+			want:     "CREATE OR REPLACE VIEW public.v AS SELECT 1;",
+		},
+	}
+
+	for name, c := range cases {
+		c := c
+		t.Run(name, func(t *testing.T) {
+			got := rewriteSchemaQualifier(c.ddl, c.base, c.compared)
+			if got != c.want {
+				t.Errorf("got = %q\nwant = %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestGenOnlyBaseSide_RewriteViewSchema 端到端验证 P1.2 修复：VIEW 仅 base 侧
+// 有时，输出的 CREATE OR REPLACE VIEW schema 限定改写为 compared 侧。
+func TestGenOnlyBaseSide_RewriteViewSchema(t *testing.T) {
+	baseSchema := "test_2905_base"
+	comparedSchema := "test_2905_compared"
+	const viewDDL = "CREATE OR REPLACE VIEW test_2905_base.v_user_summary AS SELECT t_user.id, t_user.name FROM test_2905_base.t_user;"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("v_user_summary", driverV2.ObjectType_VIEW, viewDDL),
+	}
+	got := GenerateModifySQLs(baseSchema, base, comparedSchema, nil)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1; got=%v", len(got), got)
+	}
+	if strings.Contains(got[0], "test_2905_base.") {
+		t.Errorf("base schema qualifier must be rewritten; got=%q", got[0])
+	}
+	if !strings.Contains(got[0], "test_2905_compared.v_user_summary") {
+		t.Errorf("compared schema must appear in rewritten DDL; got=%q", got[0])
+	}
+	if !strings.Contains(got[0], "CREATE OR REPLACE VIEW") {
+		t.Errorf("expected CREATE OR REPLACE VIEW; got=%q", got[0])
+	}
+}
+
+// TestGenBothDiff_RewriteFunctionSchema 验证 P1.2 修复对 FUNCTION 两侧都有但
+// DDL 不同分支的 schema 改写。
+func TestGenBothDiff_RewriteFunctionSchema(t *testing.T) {
+	baseSchema := "base_s"
+	comparedSchema := "compared_s"
+	const fnBase = "CREATE OR REPLACE FUNCTION base_s.fn(integer) RETURNS int AS $$ SELECT 1 $$ LANGUAGE SQL;"
+	const fnCompared = "CREATE OR REPLACE FUNCTION compared_s.fn(integer) RETURNS int AS $$ SELECT 2 $$ LANGUAGE SQL;"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn(integer)", driverV2.ObjectType_FUNCTION, fnBase),
+	}
+	compared := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn(integer)", driverV2.ObjectType_FUNCTION, fnCompared),
+	}
+	got := GenerateModifySQLs(baseSchema, base, comparedSchema, compared)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1; got=%v", len(got), got)
+	}
+	if strings.Contains(got[0], "base_s.fn") {
+		t.Errorf("base schema qualifier must be rewritten; got=%q", got[0])
+	}
+	if !strings.Contains(got[0], "compared_s.fn(integer)") {
+		t.Errorf("compared schema must appear in rewritten DDL; got=%q", got[0])
+	}
+}
+
+// TestGenBothDiff_SameDDLOverload_NoOutput (P1.3 验证) 双侧同 ObjectName 且
+// DDL 完全相同 → ModifySQLs 长度 0（短路过滤）。
+func TestGenBothDiff_SameDDLOverload_NoOutput(t *testing.T) {
+	const fnDDL = "CREATE OR REPLACE FUNCTION s.fn(integer) RETURNS int AS $$ SELECT 1 $$ LANGUAGE SQL;"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn(integer)", driverV2.ObjectType_FUNCTION, fnDDL),
+	}
+	compared := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn(integer)", driverV2.ObjectType_FUNCTION, fnDDL),
+	}
+	got := GenerateModifySQLs("s", base, "s", compared)
+	if len(got) != 0 {
+		t.Errorf("same DDL overload must be filtered; got=%v", got)
+	}
+}

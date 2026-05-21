@@ -39,9 +39,43 @@ package differ
 
 import (
 	"fmt"
+	"strings"
 
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 )
+
+// rewriteSchemaQualifier 把 baseDDL 中所有 `baseSchema.` 前缀替换为 `comparedSchema.`，
+// 用于 VIEW / FUNCTION / PROCEDURE 在 base 侧 ObjectDDL 含 CREATE OR REPLACE
+// 形如 `CREATE OR REPLACE VIEW base.v AS ...` 时，把目标 schema 改写为 compared，
+// 让变更 SQL 实际作用在 compared 侧（design §7.2 收敛方向；docs/test/case-2-2.md
+// 与 case-2-3.md 缺陷溯源）。
+//
+// 替换策略：使用 strings.ReplaceAll 全字符串替换。该策略在结构化 DDL（pg_get_*
+// 输出）中是安全的：
+//
+//   - CREATE OR REPLACE VIEW / FUNCTION / PROCEDURE 行中的 schema 限定一定形如
+//     `schemaName.objectName`，替换后语义等价；
+//   - 视图 / 函数体内引用了 base schema 同名对象（如 view 体 `FROM base.t_user`）
+//     时一并被改写，与 base 侧 DDL 在 compared schema 上重建为"自包含定义"的
+//     语义一致；
+//   - 若 baseSchema 与 comparedSchema 相同（自对比兜底），ReplaceAll 是 no-op。
+//
+// 不做替换的两种边界：
+//
+//   - baseSchema 为空字符串：ReplaceAll 短路返回原 DDL；
+//   - DDL 用双引号包裹了 schema（如 `"BaseSchema".obj`）：本期 schema 名全小写
+//     不带引号，不进入此分支；未来若需支持引号场景可同步处理 `"`+baseSchema+`"`
+//     形态。
+func rewriteSchemaQualifier(ddl, baseSchema, comparedSchema string) string {
+	if baseSchema == "" || baseSchema == comparedSchema {
+		return ddl
+	}
+	// 用 `<schema>.` 作为最小可识别前缀，避免误命中字面值包含 schemaName 但
+	// 不是限定符（虽然 pg_get_* 输出里通常不会出现这种边界，仍 defensive）。
+	oldPrefix := baseSchema + "."
+	newPrefix := comparedSchema + "."
+	return strings.ReplaceAll(ddl, oldPrefix, newPrefix)
+}
 
 // dropTableWarningComment 是 DROP TABLE 语句前置的固定注释行，byte-for-byte
 // 锁定（design §7.3 + impact_analysis.yml R-Q4-1 / risk_points 第 4 条）。
@@ -112,12 +146,13 @@ func GenerateModifySQLs(
 
 		// 两侧都有：比较 ObjectDDL 文本。
 		if baseDDL.ObjectDDL == comparedDDL.ObjectDDL {
-			// 完全相同 → 无变更，跳过。
+			// 完全相同 → 无变更，跳过（Task-Test-Fix-001 P1.3：双侧 ObjectDDL
+			// 一致的重载无需输出冗余 CREATE OR REPLACE）。
 			continue
 		}
 
 		// 两侧都有但不同 → 按对象类型生成"双向收敛"语句。
-		if sql := genBothDiff(comparedSchemaName, key.Type, baseDDL); sql != "" {
+		if sql := genBothDiff(baseSchemaName, comparedSchemaName, key.Type, baseDDL); sql != "" {
 			modifySQLs = append(modifySQLs, sql)
 		}
 	}
@@ -127,14 +162,10 @@ func GenerateModifySQLs(
 		if consumedBaseKeys[key] {
 			continue
 		}
-		if sql := genOnlyBaseSide(key.Type, baseDDL); sql != "" {
+		if sql := genOnlyBaseSide(baseSchemaName, comparedSchemaName, key.Type, baseDDL); sql != "" {
 			modifySQLs = append(modifySQLs, sql)
 		}
 	}
-
-	// 兼顾 baseSchemaName 参数虽当前不参与 SQL 拼接，但保留在签名中以便
-	// 后续扩展（如 base 侧 DROP/RENAME 场景）；显式以 _ = 形式避免 unused 报告。
-	_ = baseSchemaName
 
 	return modifySQLs
 }
@@ -165,19 +196,26 @@ func buildObjectMap(ddls []*driverV2.DatabaseObjectDDL) map[objectKey]*driverV2.
 
 // genOnlyBaseSide 处理"仅 base 侧有"分支（design §7.2 表第 1 行）。
 //
-// 4 类对象统一返回 ObjectDDL 原文：
-//   - TABLE: pg_get_tabledef 原文（含 CREATE TABLE）；
-//   - VIEW: 含 CREATE OR REPLACE VIEW（extractor 上游保证）；
-//   - FUNCTION / PROCEDURE: 含 CREATE OR REPLACE（extractor 上游保证）。
+// 该分支的语义是"compared 侧不存在该对象 → 在 compared schema 上重建 base 形态"。
+// 对 4 类对象的处理：
+//
+//   - TABLE: pg_get_tabledef 原文（含 CREATE TABLE）。extractor 上游已通过
+//     SET search_path / CREATE TABLE 不带 schema 限定的方式让 base 侧 DDL
+//     默认作用在执行连接的 current_schema 上（详见 case-2-1.md），不需要在
+//     differ 层做 schema 改写；
+//   - VIEW / FUNCTION / PROCEDURE: ObjectDDL 含 `CREATE OR REPLACE X base.name`，
+//     必须把 base schema 前缀替换为 compared schema，让变更 SQL 在 compared
+//     侧创建对象（Task-Test-Fix-001 P1.2；design §7.2 收敛方向）。
 //
 // 不支持 ObjectType 返回空字符串，调用方跳过。
-func genOnlyBaseSide(objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
+func genOnlyBaseSide(baseSchema, comparedSchema, objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
 	switch objectType {
-	case driverV2.ObjectType_TABLE,
-		driverV2.ObjectType_VIEW,
+	case driverV2.ObjectType_TABLE:
+		return baseDDL.ObjectDDL
+	case driverV2.ObjectType_VIEW,
 		driverV2.ObjectType_FUNCTION,
 		driverV2.ObjectType_PROCEDURE:
-		return baseDDL.ObjectDDL
+		return rewriteSchemaQualifier(baseDDL.ObjectDDL, baseSchema, comparedSchema)
 	default:
 		return ""
 	}
@@ -219,13 +257,14 @@ func genOnlyComparedSide(schema, objectType string, comparedDDL *driverV2.Databa
 // genBothDiff 处理"两侧都有但 ObjectDDL 不同"分支（design §7.2 表第 3 行）。
 //
 // TABLE 走 DROP+CREATE 兜底（PG 系无 ALTER TABLE 幂等路径，整表替换是
-// design §7.1 选定方案）；VIEW / FUNCTION / PROCEDURE 直接用 base 侧 ObjectDDL
-// （已含 CREATE OR REPLACE，PG 系幂等）。
+// design §7.1 选定方案）；VIEW / FUNCTION / PROCEDURE 用 base 侧 ObjectDDL
+// （已含 CREATE OR REPLACE，PG 系幂等），但 schema 限定需改写为 compared
+// （Task-Test-Fix-001 P1.2；同 genOnlyBaseSide 处理）。
 //
-// schema 参数取 comparedSchemaName：DROP 发生在 compared schema 上；后续
+// schema 参数取 comparedSchema：DROP 发生在 compared schema 上；后续
 // CREATE TABLE 也作用于 compared 端（base 侧 ObjectDDL 含完整 schema 限定，
 // 由 extractor 上游 pg_get_tabledef 拼装）。
-func genBothDiff(comparedSchema, objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
+func genBothDiff(baseSchema, comparedSchema, objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
 	switch objectType {
 	case driverV2.ObjectType_TABLE:
 		// 形态：WARNING 注释 + "\n" + DROP TABLE IF EXISTS schema.name; + "\n" + CREATE TABLE 原文
@@ -235,7 +274,7 @@ func genBothDiff(comparedSchema, objectType string, baseDDL *driverV2.DatabaseOb
 	case driverV2.ObjectType_VIEW,
 		driverV2.ObjectType_FUNCTION,
 		driverV2.ObjectType_PROCEDURE:
-		return baseDDL.ObjectDDL
+		return rewriteSchemaQualifier(baseDDL.ObjectDDL, baseSchema, comparedSchema)
 	default:
 		return ""
 	}
