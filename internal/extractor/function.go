@@ -3,22 +3,34 @@
 // §6.4 把 `ObjectName` 字段填为 `funcname(arg_type_list)` 形式，让上层
 // compareSchema map key 天然唯一（同名重载分裂为多条独立结果）。
 //
-// 实现策略（Task-Test-Fix-001 P1.1）：拆成两次单列查询而非一次双列查询。
+// 实现策略（Task-Test-Fix-001 P1.1，二次定位）：用
+// `(pg_get_functiondef(oid)).definition` 字段访问把 GaussDB 的 record 返回类型
+// 拆开，并拆成 def / args 两次单列查询。
 //
 // 历史背景：Task-Dev-006 初版用单 SQL 双列 SELECT
 //
 //	SELECT pg_get_functiondef(p.oid), pg_get_function_arguments(p.oid) FROM ...
 //
-// 在 GaussDB（kernel 505.2.1）+ openGauss 官方 Go 驱动
-// `gitee.com/opengauss/openGauss-connector-go-pq` 下，多列 SELECT 含
-// `pg_get_functiondef` 时驱动会把整行打包成 record/composite 字面值返回，
-// 形如 `(4,"CREATE OR REPLACE FUNCTION ...")`，Scan 到两个 string 也无法去除
-// 外层 tuple 包裹。表象：API 旁路 modify_sql_statements 输出的 sql_statement
+// 实测在 GaussDB（kernel 505.2.1）+ openGauss 官方 Go 驱动
+// `gitee.com/opengauss/openGauss-connector-go-pq` 下，输出的 sql_statement
 // 文本前缀含 `(N,"..."`、尾部含 `")"`，复制到 psql 直接执行报语法错误
-// （详见 docs/test/case-2-3.md 与 case-2-4.md）。
+// （docs/test/case-2-3.md 与 case-2-4.md）。
 //
-// 修复方案：拆成两次单列 query，按 `ORDER BY p.oid` 对齐两份结果（同 oid 即
-// 同重载实例）。两次 round-trip 的代价远低于"输出不可执行 SQL"的体验损失。
+// 第一次定位（错误）：以为是"多列 SELECT 含 pg_get_functiondef 被驱动打包成
+// record 字面值"——拆成两次单列查询后**仍然**返回 tuple 字面值，证明根因
+// 不在驱动 RowDescription 层而在 SQL 返回类型本身。
+//
+// 第二次定位（真因）：GaussDB 的 `pg_get_functiondef(oid)` 与上游 PostgreSQL
+// 的同名函数**签名不同**——GaussDB 返回的是一个 record 类型
+// `(headerlines int, definition text)`，而非 PG 的 text；当 SELECT 不带
+// `.definition` 字段访问时，驱动按 record-as-string 序列化为
+// `(headerlines,"definition")` 形态。
+//
+// 修复方案：把 `pg_get_functiondef(p.oid)` 改写为
+// `(pg_get_functiondef(p.oid)).definition` 显式字段访问，让服务端在投影阶段
+// 就剥离 record 包装，驱动直接拿到 text。同时保留拆 def/args 两次单列查询
+// 的形态——既与 design §6.4 重载分裂天然对齐（ORDER BY p.oid），又规避
+// 未来 args 列也出现类似 record 返回的风险。
 //
 // SQL 模板：byte-for-byte 锁定（sqlmock.QueryMatcherEqual 单测验证）。
 //
@@ -40,9 +52,11 @@ import (
 // extractFunctionDefSQL 单列查询：取所有同名 FUNCTION 重载的 DDL 文本，按 oid
 // 升序返回。
 //
-// 单列查询规避 GaussDB 驱动把多列含 `pg_get_functiondef` 的行打包成 record
-// 字面值的问题（Task-Test-Fix-001 P1.1）。
-const extractFunctionDefSQL = `SELECT pg_get_functiondef(p.oid)
+// 注意 `(pg_get_functiondef(p.oid)).definition` 的显式字段访问——GaussDB
+// 的 pg_get_functiondef 返回 record (headerlines int, definition text)，
+// 直接 SELECT 会拿到 `(N, "ddl")` tuple 字面值，必须取 .definition 字段才能
+// 拿到 ddl 文本本身（Task-Test-Fix-001 P1.1）。
+const extractFunctionDefSQL = `SELECT (pg_get_functiondef(p.oid)).definition
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = $1

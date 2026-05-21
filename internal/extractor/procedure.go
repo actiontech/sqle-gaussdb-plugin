@@ -20,7 +20,10 @@ import (
 
 // extractProcedureDefSQL 单列查询：取所有同名 PROCEDURE 重载的 DDL 文本，
 // 按 oid 升序返回。
-const extractProcedureDefSQL = `SELECT pg_get_functiondef(p.oid)
+//
+// 注意 `(pg_get_functiondef(p.oid)).definition` 的显式字段访问——同 function.go
+// 注释里说明的 GaussDB record 返回类型问题（Task-Test-Fix-001 P1.1）。
+const extractProcedureDefSQL = `SELECT (pg_get_functiondef(p.oid)).definition
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = $1
