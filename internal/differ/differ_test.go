@@ -694,3 +694,186 @@ func TestGenBothDiff_SameDDLOverload_NoOutput(t *testing.T) {
 		t.Errorf("same DDL overload must be filtered; got=%v", got)
 	}
 }
+
+// TestGenOnlyBaseSide_RewriteTableSearchPath 覆盖 Task-Test-Fix-002 P2-A：
+// "仅 base 侧有"的 TABLE 输出必须把 pg_get_tabledef 首行
+// `SET search_path = baseSchema` 改写为 `SET search_path = comparedSchema`，
+// 否则后续裸表名 CREATE TABLE 会落到 base schema 撞已存在同名表
+// （case-3-1.md 缺陷溯源）。
+func TestGenOnlyBaseSide_RewriteTableSearchPath(t *testing.T) {
+	const baseDDL = "SET search_path = test_2905_base;\n" +
+		"CREATE TABLE t_order (\n" +
+		"    id integer NOT NULL,\n" +
+		"    amount numeric(10,2)\n" +
+		")\n" +
+		"WITH (orientation=row, compression=no);\n" +
+		"ALTER TABLE t_order ADD CONSTRAINT t_order_pkey PRIMARY KEY (id);"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("t_order", driverV2.ObjectType_TABLE, baseDDL),
+	}
+	got := GenerateModifySQLs("test_2905_base", base, "test_2905_compared", nil)
+	if len(got) != 1 {
+		t.Fatalf("expect 1 modify SQL, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "SET search_path = test_2905_compared") {
+		t.Errorf("expect SET search_path rewritten to compared schema; got=%q", got[0])
+	}
+	// search_path 必须只有 compared，base 字面值不应出现在 SET 行（容忍其他
+	// 位置如表名 / 字段不带 base schema 前缀，因为 pg_get_tabledef 输出 TABLE
+	// 名是裸表名，不会含 base schema 字面）。
+	for _, line := range strings.Split(got[0], "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "SET ") && strings.Contains(trim, "test_2905_base") {
+			t.Errorf("SET line still references base schema: %q", trim)
+		}
+	}
+}
+
+// TestGenBothDiff_RewriteTableSearchPath 覆盖 Task-Test-Fix-002 P2-A：
+// "两侧都有但 DDL 不同"的 TABLE 输出必须同样改写 SET search_path 到 compared，
+// 并保留 WARNING + DROP IF EXISTS comparedSchema.name 前缀（case-2-1.md 双侧
+// 都有 t_user 但 base 多列的场景）。
+func TestGenBothDiff_RewriteTableSearchPath(t *testing.T) {
+	const baseDDL = "SET search_path = test_2905_base;\n" +
+		"CREATE TABLE t_user (\n" +
+		"    id integer NOT NULL,\n" +
+		"    name text,\n" +
+		"    email text\n" +
+		")\n" +
+		"WITH (orientation=row, compression=no);"
+	const comparedDDL = "SET search_path = test_2905_compared;\n" +
+		"CREATE TABLE t_user (\n" +
+		"    id integer NOT NULL,\n" +
+		"    name text\n" +
+		")\n" +
+		"WITH (orientation=row, compression=no);"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("t_user", driverV2.ObjectType_TABLE, baseDDL),
+	}
+	compared := []*driverV2.DatabaseObjectDDL{
+		makeDDL("t_user", driverV2.ObjectType_TABLE, comparedDDL),
+	}
+
+	got := GenerateModifySQLs("test_2905_base", base, "test_2905_compared", compared)
+	if len(got) != 1 {
+		t.Fatalf("expect 1 modify SQL, got %d: %v", len(got), got)
+	}
+	out := got[0]
+	if !strings.HasPrefix(out, expectedWarning) {
+		t.Errorf("expect WARNING comment as first line; got=%q", out)
+	}
+	if !strings.Contains(out, "DROP TABLE IF EXISTS test_2905_compared.t_user;") {
+		t.Errorf("expect DROP TABLE IF EXISTS compared schema; got=%q", out)
+	}
+	if !strings.Contains(out, "SET search_path = test_2905_compared") {
+		t.Errorf("expect SET search_path rewritten to compared schema; got=%q", out)
+	}
+	// SET 行不能再含 base schema 字面（容忍 DROP TABLE 之前的"comparedSchema"
+	// 出现，那是合法的限定）。
+	for _, line := range strings.Split(out, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "SET ") && strings.Contains(trim, "test_2905_base") {
+			t.Errorf("SET line still references base schema: %q", trim)
+		}
+	}
+}
+
+// TestGenBothDiff_USTORENormalize_NoOutput 覆盖 Task-Test-Fix-002 P4：
+// 两侧 DDL 仅 `storage_type=USTORE` / `storage_type=ustore` 大小写差异时，
+// 短路跳过，不输出冗余 modify SQL（case-2-1.md 遗留次要缺陷溯源）。
+func TestGenBothDiff_USTORENormalize_NoOutput(t *testing.T) {
+	const baseDDL = "SET search_path = test_2905_base;\n" +
+		"CREATE TABLE t (id integer)\n" +
+		"WITH (orientation=row, storage_type=USTORE, compression=no);"
+	const comparedDDL = "SET search_path = test_2905_compared;\n" +
+		"CREATE TABLE t (id integer)\n" +
+		"WITH (orientation=row, storage_type=ustore, compression=no);"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("t", driverV2.ObjectType_TABLE, baseDDL),
+	}
+	compared := []*driverV2.DatabaseObjectDDL{
+		makeDDL("t", driverV2.ObjectType_TABLE, comparedDDL),
+	}
+	got := GenerateModifySQLs("test_2905_base", base, "test_2905_compared", compared)
+	if len(got) != 0 {
+		t.Errorf("USTORE/ustore case-only differences must be filtered; got=%v", got)
+	}
+}
+
+// TestGenBothDiff_SameDDLDifferentSchema_NoOutput 覆盖 Task-Test-Fix-002 P5：
+// 两侧 DDL 仅 schema 限定不同（base 写 base.fn vs compared 写 compared.fn）、
+// body 完全一致时，differ 在字符串短路前先做 schema 替换再比较 → 等价 →
+// 短路跳过，不输出冗余 CREATE OR REPLACE（case-2-3.md 遗留次要缺陷溯源）。
+func TestGenBothDiff_SameDDLDifferentSchema_NoOutput(t *testing.T) {
+	const baseDDL = "CREATE OR REPLACE FUNCTION test_2905_base.fn_calc(p integer)\n" +
+		"RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p * 2; END; $function$;"
+	const comparedDDL = "CREATE OR REPLACE FUNCTION test_2905_compared.fn_calc(p integer)\n" +
+		"RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p * 2; END; $function$;"
+
+	base := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn_calc(integer)", driverV2.ObjectType_FUNCTION, baseDDL),
+	}
+	compared := []*driverV2.DatabaseObjectDDL{
+		makeDDL("fn_calc(integer)", driverV2.ObjectType_FUNCTION, comparedDDL),
+	}
+	got := GenerateModifySQLs("test_2905_base", base, "test_2905_compared", compared)
+	if len(got) != 0 {
+		t.Errorf("same DDL with only schema-qualifier difference must be filtered; got=%v", got)
+	}
+}
+
+// TestRewriteSetSearchPath_GuardRails 覆盖 P2-A helper 的边界：
+//
+//   - baseSchema 为空 / 与 compared 相同 → no-op
+//   - SET 行不匹配 baseSchema 字面值 → 保留原文（不应误改）
+//   - 缺末尾分号 / 容忍空白
+func TestRewriteSetSearchPath_GuardRails(t *testing.T) {
+	cases := map[string]struct {
+		in       string
+		base     string
+		compared string
+		want     string
+	}{
+		"empty_base_short_circuit": {
+			in:       "SET search_path = anyschema;\nCREATE TABLE x (id int);",
+			base:     "",
+			compared: "compared",
+			want:     "SET search_path = anyschema;\nCREATE TABLE x (id int);",
+		},
+		"same_schema_short_circuit": {
+			in:       "SET search_path = s;\nCREATE TABLE x (id int);",
+			base:     "s",
+			compared: "s",
+			want:     "SET search_path = s;\nCREATE TABLE x (id int);",
+		},
+		"normal_rewrite_with_semicolon": {
+			in:       "SET search_path = base;\nCREATE TABLE x (id int);",
+			base:     "base",
+			compared: "compared",
+			want:     "SET search_path = compared;\nCREATE TABLE x (id int);",
+		},
+		"normal_rewrite_without_semicolon": {
+			in:       "SET search_path = base\nCREATE TABLE x (id int);",
+			base:     "base",
+			compared: "compared",
+			want:     "SET search_path = compared\nCREATE TABLE x (id int);",
+		},
+		"set_line_not_match_base_literal": {
+			in:       "SET search_path = other;\nCREATE TABLE x (id int);",
+			base:     "base",
+			compared: "compared",
+			want:     "SET search_path = other;\nCREATE TABLE x (id int);",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := rewriteSetSearchPath(c.in, c.base, c.compared)
+			if got != c.want {
+				t.Errorf("rewriteSetSearchPath(%q,%q,%q):\n got: %q\nwant: %q", c.in, c.base, c.compared, got, c.want)
+			}
+		})
+	}
+}

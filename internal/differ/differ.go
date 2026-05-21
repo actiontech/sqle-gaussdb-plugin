@@ -39,6 +39,7 @@ package differ
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
@@ -77,6 +78,57 @@ func rewriteSchemaQualifier(ddl, baseSchema, comparedSchema string) string {
 	return strings.ReplaceAll(ddl, oldPrefix, newPrefix)
 }
 
+// setSearchPathPattern 匹配 pg_get_tabledef 输出的首行
+// `SET search_path = <schema>;`。
+//
+// 设计要点：
+//
+//   - 行首 `^` + 多行模式 `(?m)`：仅匹配行首的 SET 语句，避免误伤 DDL 体
+//     内（如表注释）的字面 "SET search_path"；
+//   - `\s+` / `\s*` 容忍 GaussDB / openGauss 间空白宽容差异；
+//   - schema 字面值用 capture group `([A-Za-z0-9_]+)`，限定标识符字符，
+//     避免越界；本仓 schema 名全小写下划线（test_2905_base /
+//     test_2905_compared），完全落在该字符集内；
+//   - 末尾分号可选（pg_get_tabledef 实测带分号，但稳健性需要兼容缺分号）。
+//
+// 见 Task-Test-Fix-002 P2-A：pg_get_tabledef 在 GaussDB / openGauss 上返回
+// `SET search_path = <baseSchema>;\nCREATE TABLE <name> (...) WITH (...);\n
+// ALTER TABLE <name> ADD CONSTRAINT ...;`；TABLE 不带 schema 限定的 CREATE
+// 依赖此 SET 行决定建在哪个 schema。Task-Test-Fix-001 P1.2 修复了 VIEW /
+// FUNCTION / PROCEDURE 三类的 schema 限定改写（CREATE OR REPLACE schema.name
+// 形态），但 TABLE 形态不同，需要单独改写 SET search_path 行（case-3-1.md
+// 缺陷溯源）。
+var setSearchPathPattern = regexp.MustCompile(`(?m)^SET\s+search_path\s*=\s*([A-Za-z0-9_]+)(\s*;?)`)
+
+// rewriteSetSearchPath 把 TABLE DDL 文本（pg_get_tabledef 输出）首行
+// `SET search_path = baseSchema;` 改写为 `SET search_path = comparedSchema;`，
+// 让后续裸表名 CREATE TABLE 落在 compared schema 而非 base schema。
+//
+// 仅替换 `SET search_path = <baseSchema>` 这一精确匹配，不影响：
+//
+//   - DDL 体内（如 view 体 / function 体）任何 SET search_path 字面值（实际
+//     pg_get_tabledef 输出不含 view/function 体，但稳健性需要锁定 base 字面值
+//     匹配，避免 grep-style 误伤）；
+//   - 替换后的 SET 语句末尾分号 / 空白原样保留（capture group $2 回写）。
+//
+// design §7.2 红线：schema 改写只能 base→compared 单向，不可反向；当 base 与
+// compared schema 相同（自对比兜底）或 base 为空时短路返回原 DDL。
+func rewriteSetSearchPath(ddl, baseSchema, comparedSchema string) string {
+	if baseSchema == "" || baseSchema == comparedSchema {
+		return ddl
+	}
+	// 用 ReplaceAllStringFunc 精确捕获 schema 字面值，仅当与 baseSchema 相
+	// 等时才做替换（避免误命中其他 schema 的 SET 行 —— 实际 pg_get_tabledef
+	// 输出只有一行 SET 且必然指向 baseSchema，仍保留这层 defensive 校验）。
+	return setSearchPathPattern.ReplaceAllStringFunc(ddl, func(m string) string {
+		sub := setSearchPathPattern.FindStringSubmatch(m)
+		if len(sub) < 3 || sub[1] != baseSchema {
+			return m
+		}
+		return "SET search_path = " + comparedSchema + sub[2]
+	})
+}
+
 // dropTableWarningComment 是 DROP TABLE 语句前置的固定注释行，byte-for-byte
 // 锁定（design §7.3 + impact_analysis.yml R-Q4-1 / risk_points 第 4 条）。
 //
@@ -84,6 +136,30 @@ func rewriteSchemaQualifier(ddl, baseSchema, comparedSchema string) string {
 // 该注释是 DROP TABLE 误删生产数据的唯一兜底（无第二道防御），单测
 // TestDiffer_WarningCommentInjection 专门用字面值副本断言锁定。
 const dropTableWarningComment = "-- WARNING: DROP TABLE will drop data. Review before executing."
+
+// ustoreNormalizePattern 把 `storage_type=<USTORE 任意大小写>` 归一为
+// `storage_type=ustore`，用于 DDL 字符串比较时的兜底（Task-Test-Fix-002 P4
+// 兼容性合并修复）。
+//
+// 背景：GaussDB pg_get_tabledef 输出的 `WITH (orientation=row, storage_type=...)`
+// 子句中 storage_type 的大小写在 base / compared 两侧偶发不一致——首次
+// CREATE TABLE 服务端缓存写 `USTORE`，重建后变 `ustore`；同表结构因纯大小写
+// 字面差异被识别为 inconsistent，误报变更。pg 系数据源的 WITH 子句字面值
+// 大小写不影响存储引擎语义。case-2-1.md 遗留次要 P4 缺陷溯源。
+var ustoreNormalizePattern = regexp.MustCompile(`(?i)storage_type\s*=\s*ustore`)
+
+// normalizeDDLForCompare 把 DDL 文本做字符串比较前的归一化：
+//
+//  1. P4: `storage_type=USTORE` 大小写归一到 `storage_type=ustore`；
+//
+// 仅用于"两侧 ObjectDDL 是否相等"短路判断的副本比较，**不**改原 DDL（落盘到
+// modify SQL 时仍是 base 侧原文，避免影响下游执行）。
+//
+// 后续 P4 之外的归一化项可以在该 helper 内部继续累加（如未来发现的其他
+// 大小写规范化点），保持调用点单一。
+func normalizeDDLForCompare(s string) string {
+	return ustoreNormalizePattern.ReplaceAllString(s, "storage_type=ustore")
+}
 
 // objectKey 是 (ObjectName, ObjectType) 二元组私有类型，用于在 base / compared
 // 两侧 DDL 列表间建立索引。
@@ -144,10 +220,36 @@ func GenerateModifySQLs(
 
 		consumedBaseKeys[key] = true
 
-		// 两侧都有：比较 ObjectDDL 文本。
-		if baseDDL.ObjectDDL == comparedDDL.ObjectDDL {
-			// 完全相同 → 无变更，跳过（Task-Test-Fix-001 P1.3：双侧 ObjectDDL
-			// 一致的重载无需输出冗余 CREATE OR REPLACE）。
+		// 两侧都有：比较 ObjectDDL 文本（含 Task-Test-Fix-002 P5 + P4
+		// 双层归一化）：
+		//
+		//  P5（schema 替换前置）：把 base 侧 ObjectDDL 内的 baseSchema. 限定
+		//   全部替换为 comparedSchema.，让"仅 schema 限定不同 + body 相同"的
+		//   场景（典型：FUNCTION/PROCEDURE 重载的 same body）也能被识别为
+		//   "无实质差异"，不输出冗余 CREATE OR REPLACE（case-2-3.md 遗留
+		//   次要缺陷）；
+		//
+		//  P4（USTORE 大小写归一）：把两侧 DDL 中 `storage_type=USTORE` /
+		//   `storage_type=ustore` 归一到统一形态再比较，避免 GaussDB
+		//   pg_get_tabledef 输出的大小写漂移误判（case-2-1.md 遗留次要缺陷）；
+		//
+		// 比较仅作用于 normalize 后的副本，不修改原 ObjectDDL；命中相等时
+		// 短路跳过，否则继续走 genBothDiff 输出真实变更。
+		// 双层 schema 改写：rewriteSchemaQualifier 处理 `schema.name` 限定形态
+		// （VIEW/FUNCTION/PROCEDURE 路径），rewriteSetSearchPath 处理
+		// `SET search_path = schema` 形态（TABLE 路径）。两者互不干扰：
+		// rewriteSchemaQualifier 走的是 `<schema>.` 前缀模式，不会误伤
+		// SET 行；rewriteSetSearchPath 走的是行首正则，不会误伤 schema.name。
+		baseAfterSchemaRewrite := rewriteSetSearchPath(
+			rewriteSchemaQualifier(baseDDL.ObjectDDL, baseSchemaName, comparedSchemaName),
+			baseSchemaName, comparedSchemaName,
+		)
+		baseForCompare := normalizeDDLForCompare(baseAfterSchemaRewrite)
+		comparedForCompare := normalizeDDLForCompare(comparedDDL.ObjectDDL)
+		if baseForCompare == comparedForCompare {
+			// 完全相同（含 schema 改写后的等价 + USTORE 归一） → 无变更，跳过
+			// （Task-Test-Fix-001 P1.3 重载 same DDL 短路 + Task-Test-Fix-002
+			// P4/P5 兼容性归一短路）。
 			continue
 		}
 
@@ -199,10 +301,11 @@ func buildObjectMap(ddls []*driverV2.DatabaseObjectDDL) map[objectKey]*driverV2.
 // 该分支的语义是"compared 侧不存在该对象 → 在 compared schema 上重建 base 形态"。
 // 对 4 类对象的处理：
 //
-//   - TABLE: pg_get_tabledef 原文（含 CREATE TABLE）。extractor 上游已通过
-//     SET search_path / CREATE TABLE 不带 schema 限定的方式让 base 侧 DDL
-//     默认作用在执行连接的 current_schema 上（详见 case-2-1.md），不需要在
-//     differ 层做 schema 改写；
+//   - TABLE: pg_get_tabledef 原文（含 CREATE TABLE）。extractor 上游产出形态为
+//     `SET search_path = baseSchema;\nCREATE TABLE <name> (...);\n...`，CREATE
+//     是裸表名，依赖 SET 行决定建在哪个 schema。Task-Test-Fix-002 P2-A：
+//     必须把首行 SET search_path 改写为 comparedSchema，让 CREATE 落在
+//     compared 侧（case-3-1.md 缺陷溯源）；
 //   - VIEW / FUNCTION / PROCEDURE: ObjectDDL 含 `CREATE OR REPLACE X base.name`，
 //     必须把 base schema 前缀替换为 compared schema，让变更 SQL 在 compared
 //     侧创建对象（Task-Test-Fix-001 P1.2；design §7.2 收敛方向）。
@@ -211,7 +314,7 @@ func buildObjectMap(ddls []*driverV2.DatabaseObjectDDL) map[objectKey]*driverV2.
 func genOnlyBaseSide(baseSchema, comparedSchema, objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
 	switch objectType {
 	case driverV2.ObjectType_TABLE:
-		return baseDDL.ObjectDDL
+		return rewriteSetSearchPath(baseDDL.ObjectDDL, baseSchema, comparedSchema)
 	case driverV2.ObjectType_VIEW,
 		driverV2.ObjectType_FUNCTION,
 		driverV2.ObjectType_PROCEDURE:
@@ -267,10 +370,14 @@ func genOnlyComparedSide(schema, objectType string, comparedDDL *driverV2.Databa
 func genBothDiff(baseSchema, comparedSchema, objectType string, baseDDL *driverV2.DatabaseObjectDDL) string {
 	switch objectType {
 	case driverV2.ObjectType_TABLE:
-		// 形态：WARNING 注释 + "\n" + DROP TABLE IF EXISTS schema.name; + "\n" + CREATE TABLE 原文
+		// 形态：WARNING 注释 + "\n" + DROP TABLE IF EXISTS schema.name; +
+		// "\n" + CREATE TABLE 原文（已改写 SET search_path 到 compared 侧）。
+		// Task-Test-Fix-002 P2-A：与 genOnlyBaseSide 同步改写 SET search_path，
+		// 否则两侧都有但 DDL 不同的 TABLE 仍会撞 base schema 同名表
+		// （case-3-1.md / case-2-1.md 系列缺陷的同源根因）。
 		return dropTableWarningComment + "\n" +
 			fmt.Sprintf("DROP TABLE IF EXISTS %s.%s;", comparedSchema, baseDDL.DatabaseObject.ObjectName) +
-			"\n" + baseDDL.ObjectDDL
+			"\n" + rewriteSetSearchPath(baseDDL.ObjectDDL, baseSchema, comparedSchema)
 	case driverV2.ObjectType_VIEW,
 		driverV2.ObjectType_FUNCTION,
 		driverV2.ObjectType_PROCEDURE:
