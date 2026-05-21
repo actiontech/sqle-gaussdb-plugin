@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
@@ -30,6 +31,76 @@ import (
 	"github.com/actiontech/sqle-gaussdb-plugin/internal/differ"
 	"github.com/actiontech/sqle-gaussdb-plugin/internal/extractor"
 )
+
+// stripObjectNameSignature 把 plugin gRPC 入参中的 ObjectName 字符串剥除参数
+// 签名部分，返回 bare 名（pg_proc.proname 字面值，无括号 / 参数列表）。
+//
+// 背景（Task-Test-Fix-002 P2-B；
+// expertise_docs/episodic/sqle_gaussdb_modify_sql_object_name_signature_mismatch_20260521.md）：
+//
+//   - sqle-ee 业务层 / dms-ui-ee UI 主路径在调 plugin
+//     GetDatabaseDiffModifySQL / GetDatabaseObjectDDL 时，会把树中显示文本
+//     （含参数签名，如 `fn_calc(p integer)` / `proc_alert(p TEXT)`）作为
+//     ObjectName 透传给 plugin；
+//   - plugin extractor 内部 extractFunction / extractProcedure 用 ObjectName
+//     作为 `pg_proc.proname = $2` 的绑定参数查询；pg_proc.proname 字面值
+//     永远是 bare name（PG 系数据源系统目录约定），含括号 / 参数签名的
+//     字符串永远查不到任何行，被走"占位 ObjectDDL=空"分支；
+//   - 后果是 base / compared 两侧都返回空 DDL 占位，differ 比对得到
+//     modify_sqls=[]，UI 抽屉显示"暂无数据"（case-3-3.md / case-3-4.md）。
+//
+// 修复策略：plugin 入口前置剥签名 → 用 bare name 查 pg_proc → 命中 N 个重载
+// → 每条 ObjectName 由 plugin extractor 重新拼为 `fn_calc(<arg_types>)` 规范
+// 形态（pg_get_function_arguments 输出）。这样：
+//
+//   - base / compared 两侧 normalize 后 ObjectName 一致（规范签名 key），
+//     differ map 比对正确；
+//   - 重载场景天然分裂为多条 entry，不存在 ambiguous 问题（与 R-Q4-2 重载
+//     语义对齐）；
+//   - 兼容用户传 bare 名（不带括号）的 API 旁路调用（IndexByte 返回 -1 → 原
+//     样返回）。
+//
+// 切分策略：以 `(` 为分界点，取前缀部分；不剥除 schema 前缀（plugin 入口
+// 的 ObjectName 不带 schema，schema 由 SchemaName 字段单独承载）。
+func stripObjectNameSignature(s string) string {
+	idx := strings.IndexByte(s, '(')
+	if idx < 0 {
+		return s
+	}
+	// 用 TrimRight 容忍 `fn_calc (p int)` 这样在括号前带空格的形态（虽然
+	// dms-ui-ee 实际不会这么传，但稳健性需要 defensive）。
+	return strings.TrimRight(s[:idx], " \t")
+}
+
+// normalizeObjectsForExtractor 把入参对象列表中的 ObjectName 剥签名后返回
+// 新的列表，原列表 / 原 *DatabaseObject 指针不修改（避免影响调用方持有的
+// proto 消息状态）。
+//
+// 仅 FUNCTION / PROCEDURE 才需要剥签名；TABLE / VIEW 的 ObjectName 不含
+// 括号，IndexByte 返回 -1，stripObjectNameSignature 短路返回原值，所以全量
+// normalize 不影响 TABLE / VIEW 路径。
+func normalizeObjectsForExtractor(objs []*driverV2.DatabaseObject) []*driverV2.DatabaseObject {
+	if len(objs) == 0 {
+		return objs
+	}
+	out := make([]*driverV2.DatabaseObject, 0, len(objs))
+	for _, obj := range objs {
+		if obj == nil {
+			out = append(out, obj)
+			continue
+		}
+		bare := stripObjectNameSignature(obj.ObjectName)
+		if bare == obj.ObjectName {
+			out = append(out, obj)
+			continue
+		}
+		// 拷贝一份新值，不修改原 proto 消息。
+		cp := *obj
+		cp.ObjectName = bare
+		out = append(out, &cp)
+	}
+	return out
+}
 
 // Connection-pool policy shared by the GaussDB and openGauss variants. The
 // values match sqle-pg-plugin's runtime profile so the new plugin does not
@@ -213,7 +284,16 @@ func (d *Driver) GetDatabaseObjectDDL(
 		if info == nil {
 			continue
 		}
-		result, err := ex.Extract(ctx, info)
+		// Task-Test-Fix-002 P2-B: 入口剥签名，让带签名的 FUNCTION/PROCEDURE
+		// ObjectName（如 `fn_calc(p integer)`）也能命中 pg_proc.proname。
+		// 该 normalize 仅作用于 extractor 入参，不影响 result.SchemaName /
+		// 返回的 ObjectName（由 extractor 内部按 pg_get_function_arguments
+		// 输出重新拼接）。
+		normInfo := &driverV2.DatabaseSchemaInfo{
+			SchemaName:      info.SchemaName,
+			DatabaseObjects: normalizeObjectsForExtractor(info.DatabaseObjects),
+		}
+		result, err := ex.Extract(ctx, normInfo)
 		if err != nil {
 			return nil, err
 		}
@@ -271,9 +351,16 @@ func (d *Driver) GetDatabaseDiffModifySQL(
 			continue
 		}
 
+		// Task-Test-Fix-002 P2-B: 入口剥签名（同 GetDatabaseObjectDDL）。
+		// UI 主路径会把树中显示文本 `fn_calc(p integer)` 作为 ObjectName
+		// 透传给 plugin，必须在调 extractor 之前剥签名，否则
+		// pg_proc.proname 查询命中 0 行，走"占位空 DDL"分支，differ 比对
+		// 输出 modify_sqls=[]（case-3-3.md / case-3-4.md 缺陷溯源）。
+		normObjs := normalizeObjectsForExtractor(info.DatabaseObjects)
+
 		baseInfo := &driverV2.DatabaseSchemaInfo{
 			SchemaName:      info.BaseSchemaName,
-			DatabaseObjects: info.DatabaseObjects,
+			DatabaseObjects: normObjs,
 		}
 		baseResult, err := ex.Extract(ctx, baseInfo)
 		if err != nil {
@@ -282,7 +369,7 @@ func (d *Driver) GetDatabaseDiffModifySQL(
 
 		comparedInfo := &driverV2.DatabaseSchemaInfo{
 			SchemaName:      info.ComparedSchemaName,
-			DatabaseObjects: info.DatabaseObjects,
+			DatabaseObjects: normObjs,
 		}
 		comparedResult, err := ex.Extract(ctx, comparedInfo)
 		if err != nil {

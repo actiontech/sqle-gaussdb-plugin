@@ -803,6 +803,182 @@ func TestDriver_GetDatabaseDiffModifySQL_RealChain(t *testing.T) {
 	}
 }
 
+// extractFunctionDefSQLLiteral / extractFunctionArgsSQLLiteral mirror
+// internal/extractor/function.go byte-for-byte (same duplication rationale as
+// extractTableSQLLiteral above).
+const extractFunctionDefSQLLiteral = `SELECT (pg_get_functiondef(p.oid)).definition
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = $1
+  AND p.prokind = 'f'
+  AND p.proname = $2
+ORDER BY p.oid`
+
+const extractFunctionArgsSQLLiteral = `SELECT pg_get_function_arguments(p.oid)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = $1
+  AND p.prokind = 'f'
+  AND p.proname = $2
+ORDER BY p.oid`
+
+// TestStripObjectNameSignature 覆盖 Task-Test-Fix-002 P2-B 入口前置
+// normalize helper：
+//
+//   - 带签名 → 剥到 bare name
+//   - 无签名 → 原样返回
+//   - 括号前带空格 → TrimRight 容忍
+//   - 空串 → 空串
+//   - 仅括号 → 空串
+func TestStripObjectNameSignature(t *testing.T) {
+	cases := map[string]struct {
+		in   string
+		want string
+	}{
+		"function_with_param_name_and_type": {in: "fn_calc(p integer)", want: "fn_calc"},
+		"function_with_type_only":           {in: "fn_calc(integer)", want: "fn_calc"},
+		"function_with_multi_args":          {in: "fn(integer, text)", want: "fn"},
+		"function_with_no_args":             {in: "fn()", want: "fn"},
+		"bare_name_unchanged":               {in: "fn_calc", want: "fn_calc"},
+		"empty_string_unchanged":            {in: "", want: ""},
+		"procedure_with_TEXT_typed_param":   {in: "proc_alert(p TEXT)", want: "proc_alert"},
+		"space_before_paren_trimmed":        {in: "fn_calc (integer)", want: "fn_calc"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := stripObjectNameSignature(c.in)
+			if got != c.want {
+				t.Errorf("stripObjectNameSignature(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeObjectsForExtractor 覆盖批量 normalize helper：
+//
+//   - 不修改原 *DatabaseObject 指针（拷贝新值）
+//   - TABLE/VIEW 路径（无括号）原样透传
+//   - FUNCTION/PROCEDURE 路径剥签名
+//   - nil 切片 / 空切片 / 含 nil 元素 安全处理
+func TestNormalizeObjectsForExtractor(t *testing.T) {
+	t.Run("empty_input_short_circuits", func(t *testing.T) {
+		if got := normalizeObjectsForExtractor(nil); got != nil {
+			t.Errorf("nil input should pass through, got %v", got)
+		}
+		if got := normalizeObjectsForExtractor([]*driverV2.DatabaseObject{}); len(got) != 0 {
+			t.Errorf("empty input should pass through, got %v", got)
+		}
+	})
+
+	t.Run("function_with_signature_stripped_without_mutating_original", func(t *testing.T) {
+		orig := []*driverV2.DatabaseObject{
+			{ObjectName: "fn_calc(p integer)", ObjectType: driverV2.ObjectType_FUNCTION},
+			{ObjectName: "t_user", ObjectType: driverV2.ObjectType_TABLE},
+		}
+		got := normalizeObjectsForExtractor(orig)
+		if len(got) != 2 {
+			t.Fatalf("got len = %d, want 2", len(got))
+		}
+		if got[0].ObjectName != "fn_calc" {
+			t.Errorf("got[0].ObjectName = %q, want %q", got[0].ObjectName, "fn_calc")
+		}
+		if got[1].ObjectName != "t_user" {
+			t.Errorf("got[1].ObjectName = %q, want %q", got[1].ObjectName, "t_user")
+		}
+		// 原列表不可被改写。
+		if orig[0].ObjectName != "fn_calc(p integer)" {
+			t.Errorf("original ObjectName mutated to %q", orig[0].ObjectName)
+		}
+		// TABLE/VIEW 路径下，未修改的元素可以直接复用原指针（节省拷贝）。
+		if got[1] != orig[1] {
+			t.Errorf("TABLE path should reuse the original pointer to avoid copy")
+		}
+	})
+
+	t.Run("nil_element_is_preserved", func(t *testing.T) {
+		orig := []*driverV2.DatabaseObject{
+			nil,
+			{ObjectName: "fn(integer)", ObjectType: driverV2.ObjectType_FUNCTION},
+		}
+		got := normalizeObjectsForExtractor(orig)
+		if len(got) != 2 || got[0] != nil {
+			t.Fatalf("nil element not preserved: %v", got)
+		}
+		if got[1].ObjectName != "fn" {
+			t.Errorf("got[1].ObjectName = %q, want %q", got[1].ObjectName, "fn")
+		}
+	})
+}
+
+// TestDriver_GetDatabaseDiffModifySQL_StripsObjectNameSignature 覆盖
+// Task-Test-Fix-002 P2-B 端到端：UI 主路径传入带签名 ObjectName
+// `fn_calc(p integer)` 时，plugin GetDatabaseDiffModifySQL 入口剥签名得到
+// bare `fn_calc` 再传给 extractor —— extractor 用 `proname = 'fn_calc'`
+// 命中 pg_proc，差异 SQL 正常输出，UI 抽屉不再"暂无数据"
+// （case-3-3.md / case-3-4.md 缺陷复测断言）。
+func TestDriver_GetDatabaseDiffModifySQL_StripsObjectNameSignature(t *testing.T) {
+	const (
+		baseFnDDL     = "CREATE OR REPLACE FUNCTION base.fn_calc(p integer) RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p * 2; END $function$;"
+		comparedFnDDL = "CREATE OR REPLACE FUNCTION compared.fn_calc(p integer) RETURNS integer LANGUAGE plpgsql AS $function$ BEGIN RETURN p * 3; END $function$;"
+	)
+
+	d, mock, cleanup := newRealChainTestDriver(t)
+	defer cleanup()
+
+	// 关键断言：driver 入口收到带签名 ObjectName，但 extractor 实际收到 bare
+	// 名 → sqlmock ExpectQuery 用 bare "fn_calc" 作为参数匹配；如果 P2-B 未
+	// 修复，sqlmock 会因"unexpected argument fn_calc(p integer)"而报错。
+	mock.ExpectQuery(extractFunctionDefSQLLiteral).
+		WithArgs("base", "fn_calc").
+		WillReturnRows(sqlmock.NewRows([]string{"definition"}).AddRow(baseFnDDL))
+	mock.ExpectQuery(extractFunctionArgsSQLLiteral).
+		WithArgs("base", "fn_calc").
+		WillReturnRows(sqlmock.NewRows([]string{"arguments"}).AddRow("p integer"))
+	mock.ExpectQuery(extractFunctionDefSQLLiteral).
+		WithArgs("compared", "fn_calc").
+		WillReturnRows(sqlmock.NewRows([]string{"definition"}).AddRow(comparedFnDDL))
+	mock.ExpectQuery(extractFunctionArgsSQLLiteral).
+		WithArgs("compared", "fn_calc").
+		WillReturnRows(sqlmock.NewRows([]string{"arguments"}).AddRow("p integer"))
+
+	drv := driverV2.Driver(&GaussDBDriver{Driver: d})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	objInfos := []*driverV2.DatabasCompareSchemaInfo{
+		{
+			BaseSchemaName:     "base",
+			ComparedSchemaName: "compared",
+			DatabaseObjects: []*driverV2.DatabaseObject{
+				{ObjectName: "fn_calc(p integer)", ObjectType: driverV2.ObjectType_FUNCTION},
+			},
+		},
+	}
+
+	res, err := drv.GetDatabaseDiffModifySQL(ctx, nil, objInfos)
+	if err != nil {
+		t.Fatalf("GetDatabaseDiffModifySQL: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("len(res) = %d, want 1", len(res))
+	}
+	if len(res[0].ModifySQLs) != 1 {
+		t.Fatalf("len(ModifySQLs) = %d, want 1; got=%v", len(res[0].ModifySQLs), res[0].ModifySQLs)
+	}
+	sql := res[0].ModifySQLs[0]
+	// modify SQL 必须落到 compared schema 上（base→compared schema 改写已生效）。
+	if !strings.Contains(sql, "CREATE OR REPLACE FUNCTION compared.fn_calc") {
+		t.Errorf("expect rewritten CREATE OR REPLACE FUNCTION compared.fn_calc; got=%q", sql)
+	}
+	// 仍带参数签名 (p integer)（R-Q4-2 兼容）。
+	if !strings.Contains(sql, "(p integer)") {
+		t.Errorf("expect param signature (p integer) preserved; got=%q", sql)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
 // concreteTypeName returns the package-qualified type name of v. We avoid the
 // fmt %T format directive because it includes a leading package selector that
 // differs between go test invocations (e.g. "*driver.GaussDBDriver" vs
