@@ -4,11 +4,14 @@
 // PluginName differing. Variant-specific connection behaviour (default port,
 // default sslmode, libpq DSN layout) lives in internal/dialector and never
 // in this layer; design §3.2 / §4.3 keeps the split deliberate.
+//
+// GetDatabaseObjectDDL / GetDatabaseDiffModifySQL are NOT overridden here —
+// since Task-Dev-008 the real implementations live on *Driver (driver_common.go),
+// inherited via embedding. design §6.1 / §7.1 explicitly declares the extractor
+// and differ as variant-agnostic, so the two variants share a single body.
 package driver
 
 import (
-	"context"
-
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	hclog "github.com/hashicorp/go-hclog"
@@ -39,27 +42,4 @@ func NewOpenGaussDriverImpl(
 		return nil, err
 	}
 	return &OpenGaussDriver{Driver: base}, nil
-}
-
-// GetDatabaseObjectDDL — see driver_gaussdb.go for the rationale on returning
-// errNotImplemented rather than relying on the embedded DriverImpl default.
-// openGauss and GaussDB share the same upcoming extractor (internal/extractor
-// is variant-agnostic per design §6.1), so this method's implementation will
-// eventually delegate to the same code path as GaussDBDriver.
-func (d *OpenGaussDriver) GetDatabaseObjectDDL(
-	ctx context.Context,
-	objInfos []*driverV2.DatabaseSchemaInfo,
-) ([]*driverV2.DatabaseSchemaObjectResult, error) {
-	return nil, errNotImplemented
-}
-
-// GetDatabaseDiffModifySQL — see driver_gaussdb.go. The differ is also
-// variant-agnostic (design §7.1) so the eventual delegation matches its
-// GaussDB sibling.
-func (d *OpenGaussDriver) GetDatabaseDiffModifySQL(
-	ctx context.Context,
-	calibratedDSN *driverV2.DSN,
-	objInfos []*driverV2.DatabasCompareSchemaInfo,
-) ([]*driverV2.DatabaseDiffModifySQLResult, error) {
-	return nil, errNotImplemented
 }

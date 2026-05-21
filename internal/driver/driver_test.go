@@ -154,21 +154,25 @@ func TestDriver_CapabilityMatrix(t *testing.T) {
 		wantErrSubstr string // substring expected in err.Error(); "" means no error
 		wantNonNil    bool   // true → the probe result must be non-nil typed value
 	}{
-		"OptionalGetDatabaseObjectDDL — enabled, returns not-implemented sentinel": {
+		"OptionalGetDatabaseObjectDDL — enabled, returns empty result for nil objInfos": {
 			module: driverV2.OptionalGetDatabaseObjectDDL,
 			probe: func(ctx context.Context, drv driverV2.Driver) probeResult {
+				// Probe the real chain with nil objInfos: the for-range loop
+				// iterates zero times so extractor.NewExtractor is constructed
+				// but never invoked. Expected: ([]*DatabaseSchemaObjectResult{}, nil).
 				res, err := drv.GetDatabaseObjectDDL(ctx, nil)
 				return probeResult{err: err, nonNil: res != nil}
 			},
-			wantErrSubstr: "not implemented yet: Task-Dev-005",
+			wantNonNil: true,
 		},
-		"OptionalGetDatabaseDiffModifySQL — enabled, returns not-implemented sentinel": {
+		"OptionalGetDatabaseDiffModifySQL — enabled, returns empty result for nil objInfos": {
 			module: driverV2.OptionalGetDatabaseDiffModifySQL,
 			probe: func(ctx context.Context, drv driverV2.Driver) probeResult {
+				// Same probe shape: nil objInfos => empty slice, nil err.
 				res, err := drv.GetDatabaseDiffModifySQL(ctx, nil, nil)
 				return probeResult{err: err, nonNil: res != nil}
 			},
-			wantErrSubstr: "Task-Dev-006 (differ)",
+			wantNonNil: true,
 		},
 		"OptionalModuleGenRollbackSQL — disabled, DriverImpl default returns empty strings": {
 			module: driverV2.OptionalModuleGenRollbackSQL,
@@ -408,6 +412,7 @@ func TestDriver_PingTimeout(t *testing.T) {
 // that callers can still type-assert the original error after wrapping.
 func TestWrapPGError(t *testing.T) {
 	plainErr := errors.New("connection refused")
+	sentinel := errors.New("sqle-gaussdb-plugin: probe sentinel")
 
 	cases := map[string]struct {
 		in      error
@@ -423,8 +428,8 @@ func TestWrapPGError(t *testing.T) {
 			wantSame: plainErr,
 		},
 		"sentinel error preserves identity": {
-			in:       errNotImplemented,
-			wantSame: errNotImplemented,
+			in:       sentinel,
+			wantSame: sentinel,
 		},
 	}
 
@@ -485,6 +490,314 @@ func TestApplyPoolPolicy(t *testing.T) {
 			}
 			if got := db.Stats().MaxOpenConnections; got != c.wantMaxOpen {
 				t.Errorf("MaxOpenConnections = %d, want %d", got, c.wantMaxOpen)
+			}
+		})
+	}
+}
+
+// extractTableSQLLiteral mirrors internal/extractor/table.go:extractTableSQL
+// byte-for-byte. We deliberately duplicate the literal here (rather than
+// importing the unexported const) so the real-chain driver tests below do not
+// take a code dependency on the extractor package internals — driver layer's
+// contract is `extractor.NewExtractor(db).Extract(ctx, info)` and nothing else.
+// Any drift between this literal and extractor/table.go would be caught by the
+// existing TestExtractor_Extract_TableAndView (which exercises the canonical
+// const directly); the redundancy here is intentional documentation of the
+// SQL the driver layer ultimately issues.
+const extractTableSQLLiteral = `SELECT pg_get_tabledef(c.oid)
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1
+  AND c.relkind IN ('r', 'p')
+  AND c.relname = $2`
+
+// newRealChainTestDriver builds a *Driver whose embedded *sql.DB is a
+// sqlmock-backed connection with QueryMatcherEqual mode (so SQL-literal
+// assertions in real-chain tests below lock the byte-for-byte design §6.2.1
+// template; see semantic sqlmock_query_matcher_equal_injection_defense_20260521).
+// Unlike newTestDriver above, MonitorPingsOption is left at its default — the
+// real-chain tests never call Ping.
+func newRealChainTestDriver(t *testing.T) (*Driver, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	db, mock, err := sqlmock.New(
+		sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual),
+	)
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	impl := &driverPkg.DriverImpl{
+		Config: &driverV2.Config{},
+		DB:     db,
+	}
+	d := &Driver{DriverImpl: impl, Variant: consts.PluginNameGaussDB}
+	cleanup := func() { _ = db.Close() }
+	return d, mock, cleanup
+}
+
+// TestDriver_GetDatabaseObjectDDL_RealChain exercises the live wiring from
+// driver.GetDatabaseObjectDDL through extractor.NewExtractor(db).Extract to
+// the *sql.DB catalog query. Three sub-cases cover the contractual surface:
+//
+//   - empty objInfos slice  → empty results + nil error
+//   - one DatabaseSchemaInfo with one TABLE object → results length 1 with
+//     the round-tripped pg_get_tabledef DDL
+//   - catalog query error (sql.ErrConnDone) → error propagates, results nil
+//
+// All cases use sqlmock.QueryMatcherEqual via newRealChainTestDriver so the
+// design §6.2.1 SQL template is locked byte-for-byte.
+func TestDriver_GetDatabaseObjectDDL_RealChain(t *testing.T) {
+	const tableDDL = "SET search_path = 'public'; CREATE TABLE public.t1 (id int) WITH (orientation=row);"
+
+	cases := map[string]struct {
+		objInfos       []*driverV2.DatabaseSchemaInfo
+		mockSetup      func(mock sqlmock.Sqlmock)
+		wantLen        int
+		wantErr        bool
+		wantErrSubstr  string
+		wantFirstDDL   string
+		wantFirstObjNm string
+	}{
+		"empty objInfos returns empty slice": {
+			objInfos:  []*driverV2.DatabaseSchemaInfo{},
+			mockSetup: func(mock sqlmock.Sqlmock) {}, // no calls expected
+			wantLen:   0,
+		},
+		"single schema with one table extracted": {
+			objInfos: []*driverV2.DatabaseSchemaInfo{
+				{
+					SchemaName: "public",
+					DatabaseObjects: []*driverV2.DatabaseObject{
+						{ObjectName: "t1", ObjectType: driverV2.ObjectType_TABLE},
+					},
+				},
+			},
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(extractTableSQLLiteral).
+					WithArgs("public", "t1").
+					WillReturnRows(sqlmock.NewRows([]string{"pg_get_tabledef"}).AddRow(tableDDL))
+			},
+			wantLen:        1,
+			wantFirstDDL:   tableDDL,
+			wantFirstObjNm: "t1",
+		},
+		"extract error propagates": {
+			objInfos: []*driverV2.DatabaseSchemaInfo{
+				{
+					SchemaName: "public",
+					DatabaseObjects: []*driverV2.DatabaseObject{
+						{ObjectName: "t1", ObjectType: driverV2.ObjectType_TABLE},
+					},
+				},
+			},
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(extractTableSQLLiteral).
+					WithArgs("public", "t1").
+					WillReturnError(sql.ErrConnDone)
+			},
+			wantErr:       true,
+			wantErrSubstr: sql.ErrConnDone.Error(),
+		},
+	}
+
+	for name, c := range cases {
+		c := c
+		t.Run(name, func(t *testing.T) {
+			d, mock, cleanup := newRealChainTestDriver(t)
+			defer cleanup()
+			c.mockSetup(mock)
+
+			drv := driverV2.Driver(&GaussDBDriver{Driver: d})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			res, err := drv.GetDatabaseObjectDDL(ctx, c.objInfos)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil; res=%v", res)
+				}
+				if c.wantErrSubstr != "" && !strings.Contains(err.Error(), c.wantErrSubstr) {
+					t.Errorf("err %q does not contain %q", err.Error(), c.wantErrSubstr)
+				}
+				if res != nil {
+					t.Errorf("expected nil res on error, got %v", res)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got := len(res); got != c.wantLen {
+					t.Fatalf("len(res) = %d, want %d", got, c.wantLen)
+				}
+				if c.wantLen > 0 {
+					first := res[0]
+					if first == nil {
+						t.Fatal("res[0] is nil")
+					}
+					if got := len(first.DatabaseObjectDDLs); got != 1 {
+						t.Fatalf("len(res[0].DatabaseObjectDDLs) = %d, want 1", got)
+					}
+					ddl := first.DatabaseObjectDDLs[0]
+					if ddl.ObjectDDL != c.wantFirstDDL {
+						t.Errorf("ObjectDDL = %q, want %q", ddl.ObjectDDL, c.wantFirstDDL)
+					}
+					if ddl.DatabaseObject == nil || ddl.DatabaseObject.ObjectName != c.wantFirstObjNm {
+						t.Errorf("DatabaseObject.ObjectName = %v, want %q", ddl.DatabaseObject, c.wantFirstObjNm)
+					}
+				}
+			}
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("sqlmock expectations: %v", err)
+			}
+		})
+	}
+}
+
+// TestDriver_GetDatabaseDiffModifySQL_RealChain exercises the live wiring from
+// driver.GetDatabaseDiffModifySQL through two extractor.Extract invocations
+// (base side then compared side) into differ.GenerateModifySQLs.
+//
+// Sub-cases:
+//
+//  1. empty objInfos slice → empty results + nil error
+//  2. single DatabasCompareSchemaInfo with one TABLE that diffs between
+//     base and compared → one DatabaseDiffModifySQLResult whose ModifySQLs
+//     contains the WARNING comment + DROP TABLE IF EXISTS + CREATE TABLE
+//     (end-to-end DROP+CREATE wiring, design §7.2 / R-Q4-1)
+//  3. base-side extract error → error propagates, compared-side ExpectQuery
+//     is intentionally NOT registered to prove the second call is short-
+//     circuited (sqlmock.ExpectationsWereMet would still pass because we
+//     never queued the second expectation)
+//
+// All cases lock the design §6.2.1 SQL template byte-for-byte via
+// QueryMatcherEqual; the base and compared sides issue the SAME SQL with the
+// SAME args (only the SchemaName parameter differs) and sqlmock consumes them
+// in registration order.
+func TestDriver_GetDatabaseDiffModifySQL_RealChain(t *testing.T) {
+	const (
+		baseTableDDL     = "CREATE TABLE base.t (id int);"
+		comparedTableDDL = "CREATE TABLE compared.t (id int, name text);"
+	)
+
+	cases := map[string]struct {
+		objInfos          []*driverV2.DatabasCompareSchemaInfo
+		mockSetup         func(mock sqlmock.Sqlmock)
+		wantLen           int
+		wantErr           bool
+		wantErrSubstr     string
+		wantSchemaName    string
+		wantModifyContain []string // every substring must appear inside the joined ModifySQLs
+	}{
+		"empty objInfos returns empty slice": {
+			objInfos:  []*driverV2.DatabasCompareSchemaInfo{},
+			mockSetup: func(mock sqlmock.Sqlmock) {}, // no calls expected
+			wantLen:   0,
+		},
+		"single compare info with table both diff produces DROP+CREATE": {
+			objInfos: []*driverV2.DatabasCompareSchemaInfo{
+				{
+					BaseSchemaName:     "base",
+					ComparedSchemaName: "compared",
+					DatabaseObjects: []*driverV2.DatabaseObject{
+						{ObjectName: "t", ObjectType: driverV2.ObjectType_TABLE},
+					},
+				},
+			},
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				// First extract: base side (SchemaName="base", ObjectName="t").
+				mock.ExpectQuery(extractTableSQLLiteral).
+					WithArgs("base", "t").
+					WillReturnRows(sqlmock.NewRows([]string{"pg_get_tabledef"}).AddRow(baseTableDDL))
+				// Second extract: compared side (SchemaName="compared", ObjectName="t").
+				mock.ExpectQuery(extractTableSQLLiteral).
+					WithArgs("compared", "t").
+					WillReturnRows(sqlmock.NewRows([]string{"pg_get_tabledef"}).AddRow(comparedTableDDL))
+			},
+			wantLen:        1,
+			wantSchemaName: "base",
+			wantModifyContain: []string{
+				"WARNING",
+				"DROP TABLE IF EXISTS compared.t",
+				baseTableDDL, // CREATE TABLE base.t (id int);
+			},
+		},
+		"base side extract error propagates": {
+			objInfos: []*driverV2.DatabasCompareSchemaInfo{
+				{
+					BaseSchemaName:     "base",
+					ComparedSchemaName: "compared",
+					DatabaseObjects: []*driverV2.DatabaseObject{
+						{ObjectName: "t", ObjectType: driverV2.ObjectType_TABLE},
+					},
+				},
+			},
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				// Only the base-side query is expected; compared-side must NOT
+				// fire (verified implicitly: sqlmock would report unexpected
+				// query if it did, and ExpectationsWereMet would still pass
+				// because we never queued the second expectation).
+				mock.ExpectQuery(extractTableSQLLiteral).
+					WithArgs("base", "t").
+					WillReturnError(sql.ErrConnDone)
+			},
+			wantErr:       true,
+			wantErrSubstr: sql.ErrConnDone.Error(),
+		},
+	}
+
+	for name, c := range cases {
+		c := c
+		t.Run(name, func(t *testing.T) {
+			d, mock, cleanup := newRealChainTestDriver(t)
+			defer cleanup()
+			c.mockSetup(mock)
+
+			drv := driverV2.Driver(&GaussDBDriver{Driver: d})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			res, err := drv.GetDatabaseDiffModifySQL(ctx, nil, c.objInfos)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil; res=%v", res)
+				}
+				if c.wantErrSubstr != "" && !strings.Contains(err.Error(), c.wantErrSubstr) {
+					t.Errorf("err %q does not contain %q", err.Error(), c.wantErrSubstr)
+				}
+				if res != nil {
+					t.Errorf("expected nil res on error, got %v", res)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got := len(res); got != c.wantLen {
+					t.Fatalf("len(res) = %d, want %d", got, c.wantLen)
+				}
+				if c.wantLen > 0 {
+					first := res[0]
+					if first == nil {
+						t.Fatal("res[0] is nil")
+					}
+					if first.SchemaName != c.wantSchemaName {
+						t.Errorf("SchemaName = %q, want %q", first.SchemaName, c.wantSchemaName)
+					}
+					if len(first.ModifySQLs) != 1 {
+						t.Fatalf("len(ModifySQLs) = %d, want 1; got=%v", len(first.ModifySQLs), first.ModifySQLs)
+					}
+					joined := first.ModifySQLs[0]
+					for _, sub := range c.wantModifyContain {
+						if !strings.Contains(joined, sub) {
+							t.Errorf("ModifySQLs[0] missing %q; full=%q", sub, joined)
+						}
+					}
+				}
+			}
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("sqlmock expectations: %v", err)
 			}
 		})
 	}

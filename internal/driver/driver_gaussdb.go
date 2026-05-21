@@ -8,16 +8,15 @@
 // functions produce two distinct instances (design §17.1.5
 // PluginNameRegistration).
 //
-// The two extractor / differ entry-points (GetDatabaseObjectDDL /
-// GetDatabaseDiffModifySQL) are overridden with explicit "not implemented yet"
-// errors so that callers cannot accidentally rely on the embedded DriverImpl
-// default — which returns an empty slice with no error and would silently mask
-// the missing Task-Dev-005 / Task-Dev-006 work.
+// GetDatabaseObjectDDL / GetDatabaseDiffModifySQL are NOT overridden here —
+// since Task-Dev-008 the real implementations live on *Driver (driver_common.go)
+// and both GaussDBDriver and OpenGaussDriver inherit them via embedding. The
+// per-variant override that previously returned an errNotImplemented sentinel
+// has been removed because internal/extractor (Task-Dev-005 / 006) and
+// internal/differ (Task-Dev-007) have landed.
 package driver
 
 import (
-	"context"
-
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	hclog "github.com/hashicorp/go-hclog"
@@ -54,31 +53,4 @@ func NewGaussDBDriverImpl(
 		return nil, err
 	}
 	return &GaussDBDriver{Driver: base}, nil
-}
-
-// GetDatabaseObjectDDL is the entry-point for the DDL extractor. The
-// implementation is deferred to Task-Dev-005 (plan §5); the current Driver
-// layer surfaces a clear sentinel error so DMS sees a deterministic failure
-// rather than the empty result the embedded DriverImpl default would return.
-//
-// Once Task-Dev-005 lands this method will delegate to internal/extractor.
-func (d *GaussDBDriver) GetDatabaseObjectDDL(
-	ctx context.Context,
-	objInfos []*driverV2.DatabaseSchemaInfo,
-) ([]*driverV2.DatabaseSchemaObjectResult, error) {
-	return nil, errNotImplemented
-}
-
-// GetDatabaseDiffModifySQL is the entry-point for the structural differ. The
-// implementation is deferred to Task-Dev-006 (plan §6); the current Driver
-// layer surfaces a clear sentinel error so DMS sees a deterministic failure
-// rather than the empty result the embedded DriverImpl default would return.
-//
-// Once Task-Dev-006 lands this method will delegate to internal/differ.
-func (d *GaussDBDriver) GetDatabaseDiffModifySQL(
-	ctx context.Context,
-	calibratedDSN *driverV2.DSN,
-	objInfos []*driverV2.DatabasCompareSchemaInfo,
-) ([]*driverV2.DatabaseDiffModifySQLResult, error) {
-	return nil, errNotImplemented
 }

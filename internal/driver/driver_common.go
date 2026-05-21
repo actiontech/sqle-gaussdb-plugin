@@ -26,6 +26,9 @@ import (
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	hclog "github.com/hashicorp/go-hclog"
+
+	"github.com/actiontech/sqle-gaussdb-plugin/internal/differ"
+	"github.com/actiontech/sqle-gaussdb-plugin/internal/extractor"
 )
 
 // Connection-pool policy shared by the GaussDB and openGauss variants. The
@@ -37,13 +40,6 @@ const (
 	maxIdleConns    = 5
 	connMaxLifetime = 30 * time.Minute
 )
-
-// errNotImplemented is returned by GetDatabaseObjectDDL /
-// GetDatabaseDiffModifySQL while the extractor (Task-Dev-005) and differ
-// (Task-Dev-006) implementations are pending. Keeping the placeholder text in
-// one constant lets us assert on it from unit tests without literal duplication.
-var errNotImplemented = errors.New(
-	"not implemented yet: Task-Dev-005 (extractor) / Task-Dev-006 (differ)")
 
 // Driver is the shared backing struct embedded by both GaussDBDriver and
 // OpenGaussDriver. By embedding *driverPkg.DriverImpl we inherit the default
@@ -178,4 +174,132 @@ func wrapPGError(err error) error {
 		cur = next
 	}
 	return err
+}
+
+// GetDatabaseObjectDDL delegates to internal/extractor (Task-Dev-005 / 006).
+// See plan §4.2 / §6.1: the per-schema iteration constructs a single shared
+// *extractor.Extractor (one *sql.DB scope per Driver instance) and calls
+// Extract once per *driverV2.DatabaseSchemaInfo, appending each result into
+// the returned slice.
+//
+// Defensive guard: when the embedded *sql.DB has not been initialised (e.g.
+// cfg.DSN==nil capability-probe path), surface a clear error rather than
+// dereferencing nil — same form as Ping above.
+//
+// Error propagation: a single extract failure returns (nil, err) immediately;
+// callers receive the first failure as the deterministic outcome and the
+// plugin gRPC layer surfaces it to dms-ui-ee.
+//
+// Defining this method on *Driver (rather than overriding on
+// GaussDBDriver / OpenGaussDriver) means both variants share one body via
+// embedding. The previous per-variant overrides that returned the
+// errNotImplemented sentinel have been removed by Task-Dev-008.
+func (d *Driver) GetDatabaseObjectDDL(
+	ctx context.Context,
+	objInfos []*driverV2.DatabaseSchemaInfo,
+) ([]*driverV2.DatabaseSchemaObjectResult, error) {
+	if d == nil || d.DriverImpl == nil || d.DriverImpl.DB == nil {
+		return nil, errors.New(
+			"sqle-gaussdb-plugin: GetDatabaseObjectDDL called before database connection initialised")
+	}
+
+	// One Extractor per call site is fine — construction is cheap and the
+	// receiver only retains *sql.DB; reusing it across the loop keeps the
+	// single-instance semantic explicit.
+	ex := extractor.NewExtractor(d.DriverImpl.DB)
+
+	results := make([]*driverV2.DatabaseSchemaObjectResult, 0, len(objInfos))
+	for _, info := range objInfos {
+		if info == nil {
+			continue
+		}
+		result, err := ex.Extract(ctx, info)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+// GetDatabaseDiffModifySQL delegates to internal/extractor + internal/differ
+// (Task-Dev-005 / 006 / 007). See plan §4.3 / §6.1.
+//
+// For each *driverV2.DatabasCompareSchemaInfo we run extractor.Extract twice
+// (base side then compared side) over the SAME DatabaseObjects list — the
+// real chain ships base/compared schema names alongside one shared object
+// list, so the driver layer destructures that into two extractor calls that
+// only differ in SchemaName. The two results feed differ.GenerateModifySQLs
+// (Task-Dev-007 4-arg signature) to produce the ModifySQLs string slice.
+//
+// SchemaName on the returned DatabaseDiffModifySQLResult is set to
+// info.BaseSchemaName per design §7 / impact_analysis.yml line 226 — business
+// layer organises the comparison tree by base schema. The compared schema
+// name is already encoded into DROP statements' schema qualifier inside
+// differ output, so we deliberately do not surface it on the outer result.
+//
+// calibratedDSN: not used this period. design §5 / plan §4 does not require
+// rebuilding the database connection at differ time — d.DriverImpl.DB already
+// holds the target-instance connection established at construction. The
+// parameter is retained on the signature (interface contract) and explicitly
+// discarded with `_ = calibratedDSN` so go vet's unused-parameter check stays
+// silent; future cross-instance compare scenarios may consume it.
+//
+// Defensive guard mirrors GetDatabaseObjectDDL: nil DB → explicit error.
+//
+// Error propagation: any extract failure (base or compared side) returns
+// (nil, err) immediately. We do not partially fail / partially succeed —
+// callers see a deterministic single-error outcome.
+func (d *Driver) GetDatabaseDiffModifySQL(
+	ctx context.Context,
+	calibratedDSN *driverV2.DSN,
+	objInfos []*driverV2.DatabasCompareSchemaInfo,
+) ([]*driverV2.DatabaseDiffModifySQLResult, error) {
+	if d == nil || d.DriverImpl == nil || d.DriverImpl.DB == nil {
+		return nil, errors.New(
+			"sqle-gaussdb-plugin: GetDatabaseDiffModifySQL called before database connection initialised")
+	}
+	// reserved for future cross-instance compare; this period uses the
+	// embedded *sql.DB exclusively (single-instance both-side compare).
+	_ = calibratedDSN
+
+	ex := extractor.NewExtractor(d.DriverImpl.DB)
+
+	results := make([]*driverV2.DatabaseDiffModifySQLResult, 0, len(objInfos))
+	for _, info := range objInfos {
+		if info == nil {
+			continue
+		}
+
+		baseInfo := &driverV2.DatabaseSchemaInfo{
+			SchemaName:      info.BaseSchemaName,
+			DatabaseObjects: info.DatabaseObjects,
+		}
+		baseResult, err := ex.Extract(ctx, baseInfo)
+		if err != nil {
+			return nil, err
+		}
+
+		comparedInfo := &driverV2.DatabaseSchemaInfo{
+			SchemaName:      info.ComparedSchemaName,
+			DatabaseObjects: info.DatabaseObjects,
+		}
+		comparedResult, err := ex.Extract(ctx, comparedInfo)
+		if err != nil {
+			return nil, err
+		}
+
+		sqls := differ.GenerateModifySQLs(
+			baseResult.SchemaName,
+			baseResult.DatabaseObjectDDLs,
+			comparedResult.SchemaName,
+			comparedResult.DatabaseObjectDDLs,
+		)
+
+		results = append(results, &driverV2.DatabaseDiffModifySQLResult{
+			SchemaName: info.BaseSchemaName,
+			ModifySQLs: sqls,
+		})
+	}
+	return results, nil
 }
