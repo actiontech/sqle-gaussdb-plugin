@@ -86,7 +86,22 @@ func (e *Extractor) Extract(
 		SchemaName: info.SchemaName,
 	}
 
-	for _, obj := range info.DatabaseObjects {
+	// Task-Test-Fix-001 P0：sqle-ee 主路径 execute_comparison 传入空
+	// DatabaseObjects 期待 plugin 按 SchemaName 全枚举（参考
+	// docs/test/case-2-1.md 与 expertise_docs/episodic/
+	// sqle_gaussdb_compare_main_path_empty_objects_bug_20260521.md）。
+	// 在显式 switch 分发前做一次"空 → 全枚举"兜底，让后续循环按既有
+	// 4 类对象分发逻辑处理，避免重复实现。
+	objs := info.DatabaseObjects
+	if len(objs) == 0 {
+		enumerated, err := e.enumerateSchemaObjects(ctx, info.SchemaName)
+		if err != nil {
+			return nil, err
+		}
+		objs = enumerated
+	}
+
+	for _, obj := range objs {
 		if obj == nil {
 			continue
 		}
