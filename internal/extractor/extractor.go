@@ -67,9 +67,13 @@ func NewExtractor(db *sql.DB) *Extractor {
 //     保留一个 ObjectDDL=="" 的占位条目（design §6.5：让业务层
 //     compareSchema 把它当作"该侧不存在"处理，**不报错**）。
 //
-// 分发当前覆盖 TABLE / VIEW；FUNCTION / PROCEDURE 落入 default 分支返回
-// "object type %s is not supported in this release"（Task-Dev-006 会原地补充
-// case 并修正测试期望，本期暂作过渡）。
+// 分发覆盖 TABLE / VIEW / FUNCTION / PROCEDURE 四类；其他 ObjectType（INDEX /
+// TRIGGER / EVENT / SEQUENCE / TYPE / PACKAGE 等）落入 default 分支返回
+// design §6.1 line 399 字面错误 "object type %s is not supported in this release"。
+//
+// FUNCTION / PROCEDURE 与 TABLE / VIEW 的关键差异：helper 返回 slice 而非
+// 单个 DDL（同名重载分裂为多条独立结果，design §6.4），故需用
+// `append(..., rs...)` 展开。
 func (e *Extractor) Extract(
 	ctx context.Context,
 	info *driverV2.DatabaseSchemaInfo,
@@ -102,10 +106,22 @@ func (e *Extractor) Extract(
 			}
 			result.DatabaseObjectDDLs = append(result.DatabaseObjectDDLs, ddl)
 
-		// TODO(Task-Dev-006): add case ObjectType_FUNCTION / ObjectType_PROCEDURE
-		// 与 internal/extractor/function.go / procedure.go 一同实现 design §6.2.3 / §6.2.4。
-		// 本期 FUNCTION / PROCEDURE 暂落入 default 分支返回 not supported，
-		// 单测 TestExtractor_Extract_UnsupportedObjectType 显式覆盖此过渡行为。
+		case driverV2.ObjectType_FUNCTION:
+			// 同名重载：extractFunction 返回 slice，每条 ObjectName 携带
+			// 参数签名（design §6.4），用 rs... 展开聚合。
+			rs, err := e.extractFunction(ctx, info.SchemaName, obj.ObjectName)
+			if err != nil {
+				return nil, err
+			}
+			result.DatabaseObjectDDLs = append(result.DatabaseObjectDDLs, rs...)
+
+		case driverV2.ObjectType_PROCEDURE:
+			// 与 FUNCTION 同构；prokind 差异封装在 extractProcedure 内。
+			rs, err := e.extractProcedure(ctx, info.SchemaName, obj.ObjectName)
+			if err != nil {
+				return nil, err
+			}
+			result.DatabaseObjectDDLs = append(result.DatabaseObjectDDLs, rs...)
 
 		default:
 			// design §6.1 line 399 字面值，对 INDEX / TRIGGER / EVENT 等本期不支持的对象统一返回。

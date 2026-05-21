@@ -1,15 +1,16 @@
-// extractor_test.go covers design §17.1.2 — DDL Extractor 单测矩阵 第一轮：
+// extractor_test.go covers design §17.1.2 — DDL Extractor 单测矩阵 TABLE/VIEW
+// 路径与 Extract 入口兜底：
 //
 //   - TABLE / VIEW 正常路径（SQL 模板字面匹配 + $1 / $2 参数绑定）
-//   - 不支持 ObjectType 兜底（INDEX / TRIGGER / EVENT / SEQUENCE / FUNCTION /
-//     PROCEDURE → default 分支，design §6.1 line 399 字面错误）
+//   - 不支持 ObjectType 兜底（INDEX / TRIGGER / EVENT / SEQUENCE / TYPE /
+//     PACKAGE → default 分支，design §6.1 line 399 字面错误）
 //   - 对象不存在 → sql.ErrNoRows 包装为空 DDL，不报错（design §6.5）
 //   - catalog 权限错误 → 原样透传，不吞 SQLSTATE
 //   - QuoteIdent 注入防御 → 空格 / 大小写 / 中文 / SQL 注入串 / 单引号 / 双引号
 //     6 条 case，断言 sqlmock 收到的 $1 / $2 参数原值未被 Go 侧 escape
 //
-// FUNCTION / PROCEDURE 的 重载识别（design §6.4）+ 正常分发覆盖留给
-// Task-Dev-006 (extractor_function_test.go / extractor_procedure_test.go)。
+// FUNCTION / PROCEDURE 的重载识别（design §6.4）+ 正常分发 + 注入防御覆盖在
+// function_test.go（Task-Dev-006）。
 //
 // 所有 sqlmock 用 QueryMatcherOption(QueryMatcherEqual) 模式锁定 SQL 文本，
 // 避免正则模糊匹配掩盖 design 模板偏离。
@@ -201,8 +202,8 @@ func TestExtractor_Extract_TableAndView(t *testing.T) {
 // TestExtractor_Extract_UnsupportedObjectType 覆盖 default 分支：本期不支持的
 // ObjectType 一律返回 design §6.1 line 399 字面错误。
 //
-// FUNCTION / PROCEDURE 当前同样落入 default 分支（Task-Dev-006 会原地补充
-// case 并修正本测试期望）。
+// FUNCTION / PROCEDURE 已在 Task-Dev-006 接入 extractFunction / extractProcedure
+// helper（不再走 default 分支），相关分发与重载用例位于 function_test.go。
 func TestExtractor_Extract_UnsupportedObjectType(t *testing.T) {
 	cases := map[string]struct {
 		objectType string
@@ -213,8 +214,6 @@ func TestExtractor_Extract_UnsupportedObjectType(t *testing.T) {
 		"SEQUENCE":                           {objectType: "SEQUENCE"},
 		"TYPE":                               {objectType: "TYPE"},
 		"PACKAGE":                            {objectType: "PACKAGE"},
-		"FUNCTION_passthrough_to_Task006":    {objectType: driverV2.ObjectType_FUNCTION},
-		"PROCEDURE_passthrough_to_Task006":   {objectType: driverV2.ObjectType_PROCEDURE},
 		"empty_object_type_falls_to_default": {objectType: ""},
 	}
 
