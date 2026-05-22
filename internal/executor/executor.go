@@ -1019,3 +1019,7 @@ func (e *Executor) GetTableAutoIncrementColumnDefaultValue(_ context.Context, sc
 	}
 	return resultMap, nil
 }
+
+func (e *Executor) GetRecordListWithNullInfo(ctx context.Context, sql string) ([]map[string]sql.NullString, error) {
+	return e.Db.Query(sql)
+}
