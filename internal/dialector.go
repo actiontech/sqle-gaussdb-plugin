@@ -16,9 +16,10 @@ import (
 // connInitTimeout bounds the time spent on db.Conn and conn.PingContext during
 // connectivity test. lib/pq + pgx may block indefinitely on the
 // startup-packet / SSL handshake when the remote endpoint stops responding
-// mid-handshake. Without a deadline the plugin Init RPC never returns and the
-// DMS UI hangs on "loading". 5s gives slow but reachable hosts enough headroom
-// while still failing fast on unreachable ones.
+// mid-handshake (observed against GaussDB CN/cm_agent on TCP port 8000).
+// Without a deadline the plugin Init RPC never returns and the DMS UI hangs on
+// "loading". 5s gives slow but reachable hosts enough headroom while still
+// failing fast on unreachable ones.
 const connInitTimeout = 5 * time.Second
 
 // Dialector embeds PostgresDialector for SQL parsing and DSN shape, but
@@ -54,6 +55,16 @@ func (d *Dialector) Open(dsn *driverV2.DSN) (*sql.DB, *sql.Conn, error) {
 		dsn.User, dsn.Password, dsn.Host, dsn.Port, dsn.DatabaseName))
 }
 
+// GetConn opens a database and verifies connectivity with a hard 5s deadline
+// on both db.Conn and conn.PingContext. The deadline is enforced via a
+// goroutine + select wrapper because, in practice, db.Conn(ctx) does NOT
+// always honor its ctx when the remote endpoint completes a TCP handshake but
+// then stalls during the PostgreSQL startup-message exchange (observed against
+// GaussDB CN/cm_agent on TCP port 8000): the underlying pgx ConnectConfig
+// installs a contextWatcher that arms net.Conn.SetDeadline only after the TLS
+// negotiation has begun, leaving the very first read of the startup response
+// effectively unbounded. Wrapping in a select with our own ctx.Done() gives a
+// strict upper bound regardless of how the driver internally handles ctx.
 func (d *Dialector) GetConn(driverName, dataSourceName string) (*sql.DB, *sql.Conn, error) {
 	db, err := sql.Open(driverName, dataSourceName)
 	if err != nil {
@@ -62,7 +73,30 @@ func (d *Dialector) GetConn(driverName, dataSourceName string) (*sql.DB, *sql.Co
 
 	connCtx, connCancel := context.WithTimeout(context.Background(), connInitTimeout)
 	defer connCancel()
-	conn, err := db.Conn(connCtx)
+	type connRes struct {
+		c   *sql.Conn
+		err error
+	}
+	ch := make(chan connRes, 1)
+	go func() {
+		c, err := db.Conn(connCtx)
+		ch <- connRes{c: c, err: err}
+	}()
+	var conn *sql.Conn
+	select {
+	case r := <-ch:
+		conn = r.c
+		err = r.err
+	case <-connCtx.Done():
+		err = fmt.Errorf("db.Conn timed out after %s: %w", connInitTimeout, connCtx.Err())
+		// drain the goroutine in the background and release any connection
+		// that eventually arrives so the underlying socket is not leaked.
+		go func() {
+			if r := <-ch; r.c != nil {
+				_ = r.c.Close()
+			}
+		}()
+	}
 	if err != nil {
 		db.Close()
 		return nil, nil, errors.Wrap(err, "get database connection failed when new driver")
@@ -72,10 +106,18 @@ func (d *Dialector) GetConn(driverName, dataSourceName string) (*sql.DB, *sql.Co
 
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), connInitTimeout)
 	defer pingCancel()
-	if err := conn.PingContext(pingCtx); err != nil {
+	pingCh := make(chan error, 1)
+	go func() { pingCh <- conn.PingContext(pingCtx) }()
+	var pingErr error
+	select {
+	case pingErr = <-pingCh:
+	case <-pingCtx.Done():
+		pingErr = fmt.Errorf("PingContext timed out after %s: %w", connInitTimeout, pingCtx.Err())
+	}
+	if pingErr != nil {
 		conn.Close()
 		db.Close()
-		return nil, nil, errors.Wrap(err, "ping database connection failed when new driver")
+		return nil, nil, errors.Wrap(pingErr, "ping database connection failed when new driver")
 	}
 	return db, conn, nil
 }
