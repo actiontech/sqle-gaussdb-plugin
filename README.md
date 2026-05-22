@@ -24,6 +24,27 @@ PluginName 字面值必须与 sqle 主仓 `sqle/sqle/driver/v2/util.go` 中的 `
 make docker_install
 ```
 
+> 注：当前 `go.mod` 内 `replace ../sqle` / `replace ../sqle-pg-plugin` 是为了让本地开发
+> 沙箱（无内网 GOPROXY、无法拉 actiontech 私有仓库 pseudo-version）也能直接
+> `go build`。在 CI 与正式发布环境（具备内网 GOPROXY 可拉到锁定 tag）下，请在
+> code_review 阶段或 vendor 落盘前**移除这两条 replace**——require 块的版本号已是
+> 生产形态。
+
+### 开发期沙箱本地构建（无内网 GOPROXY 时）
+
+```bash
+docker run --rm --network host \
+  -v /path/to/workspace:/workspace \
+  -e GOPROXY="https://goproxy.cn,direct" \
+  -e GOSUMDB=off \
+  -w /workspace/sqle-gaussdb-plugin \
+  golang:1.19.6 sh -c "
+    git config --global --add safe.directory /workspace/sqle-gaussdb-plugin && \
+    GOOS=linux GOARCH=amd64 go build -o bin/sqle-gaussdb-plugin ./cmd/sqle-gaussdb-plugin && \
+    GOOS=linux GOARCH=amd64 go build -o bin/sqle-opengauss-plugin ./cmd/sqle-opengauss-plugin
+  "
+```
+
 构建产物（位于 `./bin/`）：
 
 ```

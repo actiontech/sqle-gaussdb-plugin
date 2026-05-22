@@ -33,7 +33,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.0 // indirect
 	github.com/oklog/run v1.0.0 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.1
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/net v0.44.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
@@ -43,9 +43,10 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
+require github.com/DATA-DOG/go-sqlmock v1.5.0
+
 require (
 	github.com/360EntSecGroup-Skylar/excelize v1.4.1 // indirect
-	github.com/DATA-DOG/go-sqlmock v1.5.0 // indirect
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
 	github.com/actiontech/dms v0.0.0-20260520024857-5bc318ea23da // indirect
 	github.com/bwmarrin/snowflake v0.3.0 // indirect
@@ -103,10 +104,15 @@ require (
 // slices 标准包的更新版本（典型崩溃版本：crypto v0.42.0 / sys v0.44.0）。版本号来自
 // sqle-pg-plugin/go.sum 实测。
 replace (
-
 	github.com/actiontech/dms => github.com/actiontech/dms v0.0.0-20251027081421-309bc24335ca
 	github.com/actiontech/sqle => ../sqle
 	github.com/actiontech/sqle-pg-plugin => ../sqle-pg-plugin
+
+	// sqle 主仓 vendor 内已锁定 sjjian/parser fork（含 parser.Token 类型扩展），
+	// 本仓库 module 必须同步该 replace 才能让 ../sqle 内部的 mysql/splitter 包编译过。
+	// 版本号取自 sqle-pg-plugin/go.mod line 79。
+	github.com/pingcap/parser => github.com/sjjian/parser v0.0.0-20240704052347-b6199b7bccae
+
 	golang.org/x/crypto => golang.org/x/crypto v0.14.0
 	golang.org/x/net => golang.org/x/net v0.17.0
 	golang.org/x/sync => golang.org/x/sync v0.1.0
