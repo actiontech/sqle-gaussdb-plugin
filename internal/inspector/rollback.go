@@ -237,21 +237,58 @@ func (i *driverImpl) getRollbackSQLForInsertStmt(ctx context.Context, stmt *pg_q
 		return "", UnSupportSqlType{msg: fmt.Sprintf("当受影响的行数超过了预设的最大值%d时,系统将不生成回滚语句", i.maxRollbackRowNumConf)}
 	}
 
+	// Check if PK columns are present in the INSERT column list.
+	// For auto-generated PKs (e.g., SERIAL/IDENTITY) that are not in the INSERT,
+	// fall back to using all explicit columns for the WHERE clause.
+	pkColSet := make(map[string]struct{}, len(pkList))
+	for _, pk := range pkList {
+		pkColSet[pk] = struct{}{}
+	}
+	insertColNames := make([]string, 0, len(stmt.InsertStmt.Cols))
+	for _, col := range stmt.InsertStmt.Cols {
+		insertColNames = append(insertColNames, col.GetNode().(*pg_query.Node_ResTarget).ResTarget.Name)
+	}
+	allPKsInInsert := true
+	for _, pk := range pkList {
+		found := false
+		for _, colName := range insertColNames {
+			if colName == pk {
+				found = true
+				break
+			}
+		}
+		if !found {
+			allPKsInInsert = false
+			break
+		}
+	}
+
 	var rollbackSqlList []string
 	for _, value := range valueList {
 		var whereConditionList []string
-		for i, col := range stmt.InsertStmt.Cols {
-			colName := col.GetNode().(*pg_query.Node_ResTarget).ResTarget.Name
-			for _, pk := range pkList {
-				if colName == pk {
-					whereCondition := fmt.Sprintf("%s = '%s'", colName, value[i])
-					whereConditionList = append(whereConditionList, whereCondition)
+
+		if allPKsInInsert {
+			// PK columns are explicitly in the INSERT: use PK-based WHERE clause
+			for idx, colName := range insertColNames {
+				if _, isPK := pkColSet[colName]; isPK {
+					whereConditionList = append(whereConditionList, fmt.Sprintf("%s = '%s'", colName, value[idx]))
+				}
+			}
+		} else {
+			// PK columns are auto-generated (SERIAL/IDENTITY) and not in the INSERT.
+			// Fall back to all explicit columns to identify the inserted row.
+			for idx, colName := range insertColNames {
+				if value[idx] == "NULL" {
+					whereConditionList = append(whereConditionList, fmt.Sprintf("%s IS NULL", colName))
+				} else {
+					escaped := strings.ReplaceAll(value[idx], "'", "''")
+					whereConditionList = append(whereConditionList, fmt.Sprintf("%s = '%s'", colName, escaped))
 				}
 			}
 		}
 
-		if len(whereConditionList) != len(pkList) {
-			return "", UnSupportSqlType{msg: "在没有主键的表中，不支持生成回滚语句来撤销INSERT语句所做的更改"}
+		if len(whereConditionList) == 0 {
+			return "", UnSupportSqlType{msg: "无法生成回滚语句：INSERT语句中既没有主键列也没有其他列"}
 		}
 
 		where := strings.Join(whereConditionList, " AND ")
