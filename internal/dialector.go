@@ -11,7 +11,20 @@ import (
 
 	driverPkg "github.com/actiontech/sqle/sqle/pkg/driver"
 	"github.com/pkg/errors"
+
+	// driverNameGaussDB ("opengauss") must be registered before sql.Open is
+	// called below. The jackc/pgx driver cannot complete the SHA256 SASL
+	// handshake against GaussDB Kernel 505.2.1 private protocol; only
+	// gitee.com/opengauss/openGauss-connector-go-pq implements it (already
+	// proven by the dms-ee provision path).
+	_ "gitee.com/opengauss/openGauss-connector-go-pq"
 )
+
+// driverNameGaussDB is the database/sql driver name registered by
+// gitee.com/opengauss/openGauss-connector-go-pq. The plugin uses this driver
+// (rather than jackc/pgx) because GaussDB Kernel 505.2.1.SPC0800 uses a
+// private SHA256 SASL handshake that pgx v4 does not implement.
+const driverNameGaussDB = "opengauss"
 
 // connInitTimeout bounds the time spent on db.Conn and conn.PingContext during
 // connectivity test. lib/pq + pgx may block indefinitely on the
@@ -45,13 +58,15 @@ func (d *Dialector) ShowDatabaseSQL() string {
 }
 
 // Open implements driverPkg.Dialector.Open. It mirrors PostgresDialector.Open
-// (DSN composition + pgx driver) but routes through d.GetConn so that we get
-// the 5s timeout on db.Conn / conn.PingContext rather than context.TODO().
+// (DSN composition) but routes through d.GetConn using driverNameGaussDB so
+// that we (a) speak the GaussDB private SHA256 handshake via
+// openGauss-connector-go-pq, and (b) get the 5s timeout on db.Conn /
+// conn.PingContext rather than context.TODO().
 func (d *Dialector) Open(dsn *driverV2.DSN) (*sql.DB, *sql.Conn, error) {
 	if dsn.DatabaseName == "" {
 		dsn.DatabaseName = "postgres"
 	}
-	return d.GetConn("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
+	return d.GetConn(driverNameGaussDB, fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
 		dsn.User, dsn.Password, dsn.Host, dsn.Port, dsn.DatabaseName))
 }
 
