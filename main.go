@@ -31,7 +31,8 @@ func main() {
 		driverV2.OptionalModuleEstimateSQLAffectRows,
 		driverV2.OptionalModuleGenRollbackSQL,
 		driverV2.OptionalModuleKillProcess,
-		driverV2.OptionalModuleI18n)
+		driverV2.OptionalModuleI18n,
+		driverV2.OptionalBackup)
 	builder.Meta.DatabaseDefaultPort = 5432
 	builder.Meta.PluginName = "GaussDB"
 	builder.Meta.Logo = logo
