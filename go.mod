@@ -3,6 +3,7 @@ module github.com/actiontech/sqle-pg-plugin
 go 1.19
 
 require (
+	gitee.com/opengauss/openGauss-connector-go-pq v1.0.7
 	github.com/BurntSushi/toml v1.3.2
 	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/actiontech/dms v0.0.0-20251027081421-309bc24335ca
@@ -58,6 +59,7 @@ require (
 	github.com/shirou/gopsutil v2.19.10+incompatible // indirect
 	github.com/sijms/go-ora/v2 v2.2.15 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
+	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
@@ -66,6 +68,7 @@ require (
 	golang.org/x/crypto v0.14.0 // indirect
 	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	google.golang.org/genproto v0.0.0-20210701191553-46259e63a0a9 // indirect
 	google.golang.org/grpc v1.50.1 // indirect
 	google.golang.org/protobuf v1.28.0 // indirect
